@@ -148,3 +148,14 @@ def root(request: Request):
         "download": f"{base}/db/download",
         "public_example": f"{base}/public/default/snapshot.sqlite",
     })
+
+
+if __name__ == "__main__":
+    # Allow running this file directly: python server/main.py
+    # Host/port can be specified via environment variables:
+    #   HOST (default 0.0.0.0)
+    #   PORT or SERVER_PORT (default 8000)
+    import uvicorn
+    _host = os.getenv("HOST", "0.0.0.0")
+    _port = 80
+    uvicorn.run(app, host=_host, port=_port)
