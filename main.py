@@ -24,9 +24,10 @@ import jwt
 # - Designed for simplicity: manager controls when to upload, players read snapshot.
 
 STORAGE_DIR = os.getenv("STORAGE_DIR", "./storage")
-JWT_SECRET = os.getenv("JWT_SECRET", "change-me")
+JWT_SECRET = os.getenv("JWT_SECRET", "draftbuddyclandestini!")
 # Comma-separated list of users: "user1:pass1@id1,user2:pass2@id2"
-USERS_ENV = os.getenv("USERS", "manager:password@default")
+users = "guest:guest@clandestini,manager:Brukid98@clandestini"
+USERS_ENV = os.getenv("USERS", users)
 ALGORITHM = "HS256"
 
 os.makedirs(STORAGE_DIR, exist_ok=True)
