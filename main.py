@@ -26,24 +26,43 @@ import jwt
 
 STORAGE_DIR = os.getenv("STORAGE_DIR", "./storage")
 JWT_SECRET = os.getenv("JWT_SECRET", "draftbuddyclandestini!")
-# Comma-separated list of users: "user1:pass1@id1,user2:pass2@id2"
-users = "guest:guest@clandestini,manager:Brukid98@clandestini"
-USERS_ENV = os.getenv("USERS", users)
+# Users can be provided via environment (USERS) or via a file path (USERS_FILE).
+# Format for entries: "user1:pass1@id1,user2:pass2@id2" or newline-separated with same pattern.
+USERS_ENV = os.getenv("USERS", "")
+USERS_FILE = os.getenv("USERS_FILE")
 ALGORITHM = "HS256"
 
 os.makedirs(STORAGE_DIR, exist_ok=True)
 
-# Parse users from env
+# Load and parse users from env or file (no plaintext defaults in source)
 USERS = {}
-for part in [p.strip() for p in USERS_ENV.split(",") if p.strip()]:
+_raw_users = USERS_ENV
+if not _raw_users and USERS_FILE and os.path.exists(USERS_FILE):
+    try:
+        with open(USERS_FILE, "r", encoding="utf-8") as f:
+            _raw_users = f.read()
+    except Exception as e:
+        logging.getLogger("draftbuddy").warning("Failed to read USERS_FILE: %s", e)
+
+parts = []
+if _raw_users:
+    # Support either comma-separated or newline-separated definitions
+    for chunk in _raw_users.replace("\n", ",").split(","):
+        s = chunk.strip()
+        if s:
+            parts.append(s)
+
+for part in parts:
     # format username:password@manager_id
     try:
         creds, manager_id = part.split("@", 1)
         username, password = creds.split(":", 1)
         USERS[username] = {"password": password, "manager_id": manager_id}
     except ValueError:
-        # Fallback: treat the whole thing as username with default
-        USERS[part] = {"password": "password", "manager_id": part}
+        logging.getLogger("draftbuddy").warning("Skipping invalid USERS entry: %s", part)
+
+if not USERS:
+    logging.getLogger("draftbuddy").warning("No users configured. Set USERS env var or USERS_FILE path. Login will fail until configured.")
 
 # Configure simple logging to stdout
 logging.basicConfig(level=logging.INFO, format='[%(asctime)s] %(levelname)s %(message)s')
