@@ -26,23 +26,24 @@ import jwt
 
 STORAGE_DIR = os.getenv("STORAGE_DIR", "./storage")
 JWT_SECRET = os.getenv("JWT_SECRET", "draftbuddyclandestini!")
-# Users can be provided via environment (USERS) or via a file path (USERS_FILE).
-# Format for entries: "user1:pass1@id1,user2:pass2@id2" or newline-separated with same pattern.
-USERS_ENV = os.getenv("USERS", "")
-USERS_FILE = os.getenv("USERS_FILE")
+# Users are now loaded exclusively from a file named users.txt located next to this script.
+# Format for entries: "user1:pass1@id1" with entries separated by commas or newlines.
+USERS_FILE = os.path.join(os.path.dirname(__file__), "users.txt")
 ALGORITHM = "HS256"
 
 os.makedirs(STORAGE_DIR, exist_ok=True)
 
-# Load and parse users from env or file (no plaintext defaults in source)
+# Load and parse users from users.txt (no plaintext defaults in source)
 USERS = {}
-_raw_users = USERS_ENV
-if not _raw_users and USERS_FILE and os.path.exists(USERS_FILE):
+_raw_users = ""
+if os.path.exists(USERS_FILE):
     try:
         with open(USERS_FILE, "r", encoding="utf-8") as f:
             _raw_users = f.read()
     except Exception as e:
-        logging.getLogger("draftbuddy").warning("Failed to read USERS_FILE: %s", e)
+        logging.getLogger("draftbuddy").warning("Failed to read users.txt: %s", e)
+else:
+    logging.getLogger("draftbuddy").warning("users.txt not found at %s. Create server/users.txt with entries username:password@manager_id", USERS_FILE)
 
 parts = []
 if _raw_users:
@@ -59,10 +60,10 @@ for part in parts:
         username, password = creds.split(":", 1)
         USERS[username] = {"password": password, "manager_id": manager_id}
     except ValueError:
-        logging.getLogger("draftbuddy").warning("Skipping invalid USERS entry: %s", part)
+        logging.getLogger("draftbuddy").warning("Skipping invalid users.txt entry: %s", part)
 
 if not USERS:
-    logging.getLogger("draftbuddy").warning("No users configured. Set USERS env var or USERS_FILE path. Login will fail until configured.")
+    logging.getLogger("draftbuddy").warning("No users configured. Add entries to server/users.txt (username:password@manager_id). Login will fail until configured.")
 
 # Configure simple logging to stdout
 logging.basicConfig(level=logging.INFO, format='[%(asctime)s] %(levelname)s %(message)s')
