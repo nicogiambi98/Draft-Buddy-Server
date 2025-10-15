@@ -1,6 +1,7 @@
 import os
 import shutil
 import time
+import threading
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 import logging
@@ -9,6 +10,10 @@ from fastapi import FastAPI, UploadFile, File, HTTPException, Header, Request
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from pydantic import BaseModel
 import jwt
+try:
+    from zoneinfo import ZoneInfo  # Python 3.9+
+except Exception:  # pragma: no cover
+    ZoneInfo = None  # Fallback if not available; scheduler will be disabled
 
 # Minimal, ephemeral-friendly server_old for Railway
 # Stores one SQLite file per manager_id under STORAGE_DIR (may be ephemeral on Railway)
@@ -70,6 +75,100 @@ logging.basicConfig(level=logging.INFO, format='[%(asctime)s] %(levelname)s %(me
 logger = logging.getLogger("draftbuddy")
 
 app = FastAPI(title="Draft Buddy Minimal Server", version="0.1.0")
+
+# ----- Weekly backup scheduler (Europe/Rome, Thursdays at 02:00) -----
+
+def _seconds_until_next_thu_2am_rome() -> float:
+    """Return seconds until the next Thursday 02:00 in Europe/Rome timezone."""
+    if ZoneInfo is None:
+        return 7 * 24 * 3600.0  # Fallback: a week
+    rome = ZoneInfo("Europe/Rome")
+    now_rome = datetime.now(rome)
+    # Monday=0 ... Sunday=6; Thursday=3
+    target_wd = 3
+    days_ahead = (target_wd - now_rome.weekday()) % 7
+    target_date = (now_rome.date() + timedelta(days=days_ahead))
+    target_dt = datetime.combine(target_date, datetime.min.time()).replace(hour=2, tzinfo=rome)
+    if target_dt <= now_rome:
+        target_dt = target_dt + timedelta(days=7)
+    return max(1.0, (target_dt - now_rome).total_seconds())
+
+
+def _perform_backups():
+    """Create timestamped backups for each primary .sqlite DB, keep last 2 backups per DB."""
+    if not os.path.isdir(STORAGE_DIR):
+        return
+    rome = ZoneInfo("Europe/Rome") if ZoneInfo else None
+    ts = datetime.now(rome).strftime("%Y%m%d_%H%M%S") if rome else datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    for fname in os.listdir(STORAGE_DIR):
+        # primary DBs are <manager_id>.sqlite; ignore public snapshot files
+        if not fname.endswith(".sqlite"):
+            continue
+        if fname.endswith(".snapshot.sqlite"):
+            continue
+        full = os.path.join(STORAGE_DIR, fname)
+        if not os.path.isfile(full):
+            continue
+        name = fname[:-len(".sqlite")]  # strip extension
+        backup_name = f"{name}-{ts}.sqlite"
+        backup_path = os.path.join(STORAGE_DIR, backup_name)
+        try:
+            shutil.copyfile(full, backup_path)
+            size = os.path.getsize(backup_path)
+            logger.info("Backup created: %s (%d bytes)", backup_path, size)
+        except Exception as e:
+            logger.error("Failed to create backup for %s: %s", full, e)
+            continue
+        # Retention: keep only the last 2 backups for this DB
+        try:
+            backups = []
+            prefix = f"{name}-"
+            for f in os.listdir(STORAGE_DIR):
+                if f.startswith(prefix) and f.endswith(".sqlite") and not f.endswith(".snapshot.sqlite"):
+                    ts_str = f[len(prefix):-len(".sqlite")]
+                    backups.append((ts_str, os.path.join(STORAGE_DIR, f)))
+            # sort by timestamp string; format ensures lexical order == chronological order
+            backups.sort(key=lambda x: x[0])
+            # keep last two
+            old = backups[:-2]
+            for _, path in old:
+                try:
+                    os.remove(path)
+                    logger.info("Old backup removed: %s", path)
+                except Exception as e:
+                    logger.warning("Failed to remove old backup %s: %s", path, e)
+        except Exception as e:
+            logger.warning("Backup retention failed for %s: %s", name, e)
+
+
+def _backup_loop():
+    if os.getenv("DISABLE_BACKUPS"):
+        logger.info("Backups disabled via DISABLE_BACKUPS env var")
+        return
+    if ZoneInfo is None:
+        logger.warning("zoneinfo not available; scheduled backups disabled")
+        return
+    while True:
+        try:
+            secs = _seconds_until_next_thu_2am_rome()
+            try:
+                rome = ZoneInfo("Europe/Rome")
+                next_when = datetime.now(rome) + timedelta(seconds=secs)
+                logger.info("Next DB backup scheduled at %s Europe/Rome (in %.0f seconds)", next_when.strftime("%Y-%m-%d %H:%M:%S"), secs)
+            except Exception:
+                logger.info("Next DB backup in %.0f seconds", secs)
+            time.sleep(secs)
+            _perform_backups()
+        except Exception as e:
+            logger.error("Backup loop error: %s", e)
+            time.sleep(60)
+
+# Start background backup thread on import
+try:
+    t = threading.Thread(target=_backup_loop, name="db-backup-scheduler", daemon=True)
+    t.start()
+except Exception as _e:
+    logger.warning("Failed to start backup thread: %s", _e)
 
 
 class LoginBody(BaseModel):
