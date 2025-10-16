@@ -175,6 +175,7 @@ class LoginBody(BaseModel):
     username: str
     password: str
     remember: bool = True
+    playgroup: Optional[str] | None = None
 
 
 @app.get("/health")
@@ -194,15 +195,17 @@ def auth_login(body: LoginBody):
     except Exception:
         uname = ""
     role = "manager" if uname.startswith("manager") else "guest"
+    # Allow client-specified playgroup (manager_id) if provided
+    manager_id = (body.playgroup or "").strip() if getattr(body, 'playgroup', None) else user["manager_id"]
     exp_days = 90 if body.remember else 1
     exp = datetime.now(timezone.utc) + timedelta(days=exp_days)
     token = jwt.encode({
-        "sub": user["manager_id"],
+        "sub": manager_id,
         "role": role,
         "exp": int(exp.timestamp()),
     }, JWT_SECRET, algorithm=ALGORITHM)
-    logger.info("Login ok user=%s role=%s manager_id=%s", getattr(body, 'username', '?'), role, user["manager_id"])
-    return {"access_token": token, "exp": int(exp.timestamp()), "manager_id": user["manager_id"], "role": role}
+    logger.info("Login ok user=%s role=%s manager_id=%s", getattr(body, 'username', '?'), role, manager_id)
+    return {"access_token": token, "exp": int(exp.timestamp()), "manager_id": manager_id, "role": role}
 
 
 def _require_manager_token(authorization: Optional[str]) -> str:
