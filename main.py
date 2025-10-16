@@ -36,6 +36,7 @@ JWT_SECRET = os.getenv("JWT_SECRET", "draftbuddyclandestini!")
 USERS_FILE = os.path.join(os.path.dirname(__file__), "users.txt")
 ALGORITHM = "HS256"
 
+
 os.makedirs(STORAGE_DIR, exist_ok=True)
 
 # Load and parse users from users.txt (no plaintext defaults in source)
@@ -63,7 +64,8 @@ for part in parts:
     try:
         creds, manager_id = part.split("@", 1)
         username, password = creds.split(":", 1)
-        USERS[username] = {"password": password, "manager_id": manager_id}
+        username = (username or "").strip()
+        USERS.setdefault(username, []).append({"password": password, "manager_id": manager_id})
     except ValueError:
         logging.getLogger("draftbuddy").warning("Skipping invalid users.txt entry: %s", part)
 
@@ -185,8 +187,8 @@ def health():
 
 @app.post("/auth/login")
 def auth_login(body: LoginBody):
-    user = USERS.get(body.username)
-    if not user or user["password"] != body.password:
+    entries = USERS.get(body.username) or []
+    if not entries:
         logger.info("Login failed for user=%s", getattr(body, 'username', '?'))
         raise HTTPException(status_code=401, detail="Invalid credentials")
     # Determine role: any username starting with "manager" (case-insensitive) is a manager; others are guests
@@ -195,8 +197,25 @@ def auth_login(body: LoginBody):
     except Exception:
         uname = ""
     role = "manager" if uname.startswith("manager") else "guest"
-    # Allow client-specified playgroup (manager_id) if provided
-    manager_id = (body.playgroup or "").strip() if getattr(body, 'playgroup', None) else user["manager_id"]
+    # Determine playgroup (default to 'clandestini' when blank/omitted)
+    provided_pg = ((body.playgroup or "").strip()) if getattr(body, 'playgroup', None) is not None else ""
+    if not provided_pg:
+        provided_pg = "clandestini"
+    # Find a matching triple username:password@playgroup in users.txt
+    match = None
+    for e in entries:
+        try:
+            pwd = (e.get("password") or "")
+            pg = (e.get("manager_id") or "").strip()
+        except Exception:
+            continue
+        if pwd == body.password and pg == provided_pg:
+            match = e
+            break
+    if not match:
+        logger.info("Login failed for user=%s (no matching username:password@playgroup)", getattr(body, 'username', '?'))
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    manager_id = provided_pg
     exp_days = 90 if body.remember else 1
     exp = datetime.now(timezone.utc) + timedelta(days=exp_days)
     token = jwt.encode({
