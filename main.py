@@ -1,3 +1,10 @@
+"""Minimal file-sync server for Draft Buddy.
+
+Provides simple JWT-authenticated endpoints for uploading/downloading a single
+SQLite database per manager_id and a public read-only snapshot for players.
+Includes a weekly backup scheduler (Europe/Rome, Thu 02:00). This doc update
+introduces no functional changes.
+"""
 import os
 import shutil
 import time
