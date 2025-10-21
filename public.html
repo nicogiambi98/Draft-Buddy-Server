@@ -285,7 +285,6 @@
                bp.c0,bp.c1,bp.c2,bp.c3,bp.c4,bp.c5,bp.c6,bp.c7,bp.c8
         FROM bingo_players bp
         INNER JOIN players p ON p.id = bp.player_id
-        WHERE (IFNULL(bp.c0,0)+IFNULL(bp.c1,0)+IFNULL(bp.c2,0)+IFNULL(bp.c3,0)+IFNULL(bp.c4,0)+IFNULL(bp.c5,0)+IFNULL(bp.c6,0)+IFNULL(bp.c7,0)+IFNULL(bp.c8,0)) > 0
         ORDER BY name ASC
       `;
       const r = db.exec(q);
