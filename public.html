@@ -196,42 +196,26 @@
         return;
       }
       if (isClosed) {
-        // Render scoreboard for the finished event
-        const sql = `
-          SELECT
-            COALESCE(p.nickname, p.name, ep.guest_name) AS name,
-            SUM(CASE WHEN m.player1 = ep.id THEN m.score_p1 ELSE m.score_p2 END) AS pf,
-            SUM(CASE WHEN m.player1 = ep.id THEN m.score_p2 ELSE m.score_p1 END) AS pa,
-            SUM(CASE WHEN (CASE WHEN m.player1 = ep.id THEN m.score_p1 ELSE m.score_p2 END) > (CASE WHEN m.player1 = ep.id THEN m.score_p2 ELSE m.score_p1 END) THEN 1 ELSE 0 END) AS wins,
-            SUM(CASE WHEN (CASE WHEN m.player1 = ep.id THEN m.score_p1 ELSE m.score_p2 END) < (CASE WHEN m.player1 = ep.id THEN m.score_p2 ELSE m.score_p1 END) THEN 1 ELSE 0 END) AS losses,
-            SUM(CASE WHEN (CASE WHEN m.player1 = ep.id THEN m.score_p1 ELSE m.score_p2 END) = (CASE WHEN m.player1 = ep.id THEN m.score_p2 ELSE m.score_p1 END) THEN 1 ELSE 0 END) AS ties,
-            SUM(CASE WHEN (CASE WHEN m.player1 = ep.id THEN m.score_p1 ELSE m.score_p2 END) > (CASE WHEN m.player1 = ep.id THEN m.score_p2 ELSE m.score_p1 END) THEN 3 WHEN (CASE WHEN m.player1 = ep.id THEN m.score_p1 ELSE m.score_p2 END) = (CASE WHEN m.player1 = ep.id THEN m.score_p2 ELSE m.score_p1 END) THEN 1 ELSE 0 END) AS mp
-          FROM event_players ep
-          LEFT JOIN players p ON p.id = ep.player_id
-          JOIN matches m ON m.event_id = ep.event_id AND (m.player1 = ep.id OR m.player2 = ep.id)
-          WHERE ep.event_id = ${evId}
-          GROUP BY ep.id, name
-          ORDER BY mp DESC, (pf - pa) DESC, name ASC
-        `;
-        const r = db.exec(sql);
-        if (!r.length || !r[0].values.length) {
+        // Render standings using the same logic and tiebreakers as the app (pairing.compute_standings)
+        const standings = computeStandings(db, evId);
+        if (!standings.length) {
           el.innerHTML = '<p class="muted">No results available.</p>';
           return;
         }
-        const rows = r[0].values.map(v => {
-          const name = v[0];
-          const pf = v[1] || 0;
-          const pa = v[2] || 0;
-          const wins = v[3] || 0;
-          const losses = v[4] || 0;
-          const ties = v[5] || 0;
-          const mp = v[6] || 0;
-          const diff = (pf - pa) || 0;
-          return [name, wins, losses, ties, mp, pf, pa, diff];
-        });
-        const head = `<tr><th>Player</th><th>W</th><th>L</th><th>T</th><th>MP</th><th>PF</th><th>PA</th><th>Diff</th></tr>`;
-        const body = rows.map(row => `<tr>${row.map(x => `<td>${escapeHtml(String(x))}</td>`).join('')}</tr>`).join('');
-        el.innerHTML = `<div class="card"><h3>Scoreboard</h3><table>${head}${body}</table></div>`;
+        const head = `<tr><th>#</th><th>Name</th><th>MP</th><th>W-L-D</th><th>OMW%</th><th>GW%</th><th>OGW%</th></tr>`;
+        const body = standings.map((st, idx) => {
+          const rank = idx + 1;
+          const name = st.name;
+          const mp = st.mp;
+          const wld = `${st.wins}-${st.losses}-${st.draws}`;
+          const omwp = (st.omwp || 0).toFixed(2);
+          const gwp = (st.gwp || 0).toFixed(2);
+          const ogwp = (st.ogwp || 0).toFixed(2);
+          const cells = [rank, name, mp, wld, omwp, gwp, ogwp]
+            .map(x => `<td>${escapeHtml(String(x))}</td>`).join('');
+          return `<tr>${cells}</tr>`;
+        }).join('');
+        el.innerHTML = `<div class="card"><h3>Final Standings</h3><table>${head}${body}</table></div>`;
         return;
       }
       // Otherwise, show current round pairings
@@ -500,3 +484,90 @@
   </main>
 </body>
 </html>
+
+
+    // Compute standings using app logic (pairing.compute_standings)
+    function computeStandings(db, eventId) {
+      // Load event participants with player names/nicknames
+      const nr = db.exec(`SELECT ep.id, p.name, p.nickname, ep.guest_name FROM event_players ep LEFT JOIN players p ON p.id = ep.player_id WHERE ep.event_id = ${eventId} ORDER BY ep.seating_pos`);
+      if (!nr.length || !nr[0].values.length) return [];
+      const rows = nr[0].values;
+      const stats = {};
+      const nameMap = {};
+      for (const row of rows) {
+        const eid = row[0];
+        const full = row[1] || '';
+        const nick = row[2];
+        const guest = row[3];
+        let disp;
+        if (guest) disp = guest;
+        else if (full) {
+          disp = (full.length >= 20 && nick) ? nick : full;
+        } else disp = 'Unknown';
+        nameMap[eid] = disp;
+        stats[eid] = { eid, name: disp, mp: 0, wins: 0, losses: 0, draws: 0, matches: 0, game_wins: 0, game_losses: 0, opponents: [] };
+      }
+      // Process matches
+      const mr = db.exec(`SELECT player1, player2, score_p1, score_p2, bye FROM matches WHERE event_id = ${eventId}`);
+      if (mr.length && mr[0].values.length) {
+        for (const m of mr[0].values) {
+          const p1 = m[0];
+          const p2 = m[1];
+          const s1 = Number(m[2] ?? 0);
+          const s2 = Number(m[3] ?? 0);
+          const bye = Number(m[4] ?? 0);
+          if (bye === 1 && stats[p1]) {
+            const st = stats[p1];
+            st.wins += 1; st.mp += 3; st.matches += 1; st.game_wins += 2; st.game_losses += 0;
+            continue;
+          }
+          if (stats[p1] && stats[p2]) {
+            stats[p1].opponents.push(p2);
+            stats[p2].opponents.push(p1);
+            stats[p1].game_wins += s1;
+            stats[p1].game_losses += s2;
+            stats[p2].game_wins += s2;
+            stats[p2].game_losses += s1;
+            if (s1 > s2) { stats[p1].wins += 1; stats[p1].mp += 3; stats[p2].losses += 1; }
+            else if (s2 > s1) { stats[p2].wins += 1; stats[p2].mp += 3; stats[p1].losses += 1; }
+            else { stats[p1].draws += 1; stats[p2].draws += 1; stats[p1].mp += 1; stats[p2].mp += 1; }
+            stats[p1].matches += 1; stats[p2].matches += 1;
+          }
+        }
+      }
+      const floor33 = x => Math.max(x, 0.33);
+      // MW% and GW%
+      for (const eid in stats) {
+        const st = stats[eid];
+        const mw = st.matches > 0 ? (st.wins + 0.5 * st.draws) / st.matches : 0.0;
+        const gwDen = st.game_wins + st.game_losses;
+        const gw = gwDen > 0 ? (st.game_wins / gwDen) : 0.0;
+        st.mwp = Math.round(mw * 10000) / 10000;
+        st.gwp = Math.round(floor33(gw) * 10000) / 10000;
+      }
+      // OMW% and OGW%
+      for (const eid in stats) {
+        const st = stats[eid];
+        const opps = st.opponents;
+        if (!opps.length) {
+          st.omwp = 0.0; st.ogwp = 0.0;
+        } else {
+          const omwList = opps.map(opp => floor33((stats[opp] && stats[opp].mwp) || 0.0));
+          const ogwList = opps.map(opp => floor33((stats[opp] && stats[opp].gwp) || 0.0));
+          const omw = omwList.reduce((a,b)=>a+b,0) / omwList.length;
+          const ogw = ogwList.reduce((a,b)=>a+b,0) / ogwList.length;
+          st.omwp = Math.round(omw * 10000) / 10000;
+          st.ogwp = Math.round(ogw * 10000) / 10000;
+        }
+      }
+      // Sort
+      const out = Object.values(stats);
+      out.sort((a,b)=>{
+        if (b.mp !== a.mp) return b.mp - a.mp;
+        if (b.omwp !== a.omwp) return b.omwp - a.omwp;
+        if (b.gwp !== a.gwp) return b.gwp - a.gwp;
+        if (b.ogwp !== a.ogwp) return b.ogwp - a.ogwp;
+        return ('' + a.name).localeCompare('' + b.name);
+      });
+      return out;
+    }
