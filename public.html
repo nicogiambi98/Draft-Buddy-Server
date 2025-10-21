@@ -279,16 +279,33 @@
       const listEl = document.getElementById('bingoPlayers');
       const gridEl = document.getElementById('bingoGrid');
       const linesEl = document.getElementById('bingoLines');
-      // Load labels from DB if present; fallback to numbers
+      // Load labels from DB if present; prefer DB only (no remote JSON fallback)
       let labels = ['1','2','3','4','5','6','7','8','9'];
       try {
-        const lr = db.exec("SELECT id,title FROM bingo_achievements ORDER BY id ASC");
+        const lr = db.exec("SELECT id, title, name, label, text, description FROM bingo_achievements ORDER BY id ASC");
         if (lr.length && lr[0].values.length) {
-          const tmp = [];
-          for (const [id, title] of lr[0].values) {
-            tmp[Number(id)] = String(title);
+          const tmp = new Array(9);
+          const cols = lr[0].columns;
+          const titleIdx = cols.indexOf('title');
+          const nameIdx = cols.indexOf('name');
+          const labelIdx = cols.indexOf('label');
+          const textIdx = cols.indexOf('text');
+          const descIdx = cols.indexOf('description');
+          for (const row of lr[0].values) {
+            const rawId = Number(row[0]);
+            let slot = Number.isFinite(rawId) ? rawId : NaN;
+            if (!Number.isNaN(slot)) {
+              // Normalize 1..9 into 0..8
+              if (slot >= 1 && slot <= 9) slot = slot - 1;
+              if (slot >= 0 && slot < 9) {
+                const lab = [titleIdx, nameIdx, labelIdx, textIdx, descIdx]
+                  .map(i => (i >= 0 ? row[i] : undefined))
+                  .find(v => v != null && String(v).trim().length > 0);
+                if (lab != null) tmp[slot] = String(lab);
+              }
+            }
           }
-          if (tmp.filter(Boolean).length === 9) labels = tmp;
+          if (tmp.some(Boolean)) { labels = tmp.map((v,i)=> v ?? labels[i]); }
         }
       } catch(e) { /* ignore */ }
       let selected = players[0];
@@ -317,6 +334,18 @@
       }
       renderPlayerList();
       renderGrid();
+      // If DB lacks labels, try fetching from server-side achievements-old.json as a runtime fallback
+      if (!hasDbLabels) {
+        fetch(`${BASE}/public/${MANAGER_ID}/achievements.json`, { cache: 'no-store' })
+          .then(r => r.ok ? r.json() : Promise.reject(new Error(`${r.status} ${r.statusText}`)))
+          .then(j => {
+            if (j && Array.isArray(j.achievements)) {
+              const x = j.achievements.slice(0, 9).map(v => String(v));
+              if (x.length === 9 && x.every(Boolean)) { labels = x; renderGrid(); }
+            }
+          })
+          .catch(() => {/* ignore */});
+      }
     }
 
     function renderBingoMeta(meta, players){
