@@ -67,19 +67,12 @@ if _raw_users:
             parts.append(s)
 
 for part in parts:
-    # format username:password@manager_id[#role]
+    # format username:password@manager_id
     try:
-        creds, manager_info = part.split("@", 1)
+        creds, manager_id = part.split("@", 1)
         username, password = creds.split(":", 1)
         username = (username or "").strip()
-        # Optional role after '#': default to 'manager' for backward compatibility
-        if "#" in manager_info:
-            manager_id, role = manager_info.split("#", 1)
-            role = (role or "manager").strip().lower()
-        else:
-            manager_id, role = manager_info, "manager"
-        manager_id = (manager_id or "").strip()
-        USERS.setdefault(username, []).append({"password": password, "manager_id": manager_id, "role": role})
+        USERS.setdefault(username, []).append({"password": password, "manager_id": manager_id})
     except ValueError:
         logging.getLogger("draftbuddy").warning("Skipping invalid users.txt entry: %s", part)
 
@@ -217,6 +210,12 @@ def auth_login(body: LoginBody):
     if not entries:
         logger.info("Login failed for user=%s", getattr(body, 'username', '?'))
         raise HTTPException(status_code=401, detail="Invalid credentials")
+    # Determine role: any username starting with "manager" (case-insensitive) is a manager; others are guests
+    try:
+        uname = (body.username or "").strip().lower()
+    except Exception:
+        uname = ""
+    role = "manager" if uname.startswith("manager") else "guest"
     # Determine playgroup (default to 'clandestini' when blank/omitted)
     provided_pg = ((body.playgroup or "").strip()) if getattr(body, 'playgroup', None) is not None else ""
     if not provided_pg:
@@ -236,7 +235,6 @@ def auth_login(body: LoginBody):
         logger.info("Login failed for user=%s (no matching username:password@playgroup)", getattr(body, 'username', '?'))
         raise HTTPException(status_code=401, detail="Invalid credentials")
     manager_id = provided_pg
-    role = (match.get("role") or "manager")
     exp_days = 90 if body.remember else 1
     exp = datetime.now(timezone.utc) + timedelta(days=exp_days)
     token = jwt.encode({
