@@ -14,7 +14,7 @@ from typing import Optional
 import logging
 
 from fastapi import FastAPI, UploadFile, File, HTTPException, Header, Request
-from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, HTMLResponse
 from pydantic import BaseModel
 import jwt
 try:
@@ -340,8 +340,23 @@ def root(request: Request):
         "login": f"{base}/auth/login",
         "upload": f"{base}/db/upload",
         "download": f"{base}/db/download",
-        "public_example": f"{base}/public/default/snapshot.sqlite",
+        "public_example_snapshot": f"{base}/public/default/snapshot.sqlite",
+        "public_example_view": f"{base}/public/default/view",
     })
+
+
+@app.get("/public/{manager_id}/view")
+def public_view(manager_id: str):
+    """Serve a simple static HTML viewer that loads the public snapshot in-browser.
+    We inject the manager_id into the page so the JS knows what to fetch.
+    """
+    html_path = os.path.join(os.path.dirname(__file__), "public.html")
+    if not os.path.exists(html_path):
+        raise HTTPException(status_code=404, detail="public.html not found on server")
+    with open(html_path, "r", encoding="utf-8") as f:
+        html = f.read()
+    html = html.replace("__MANAGER_ID__", manager_id)
+    return HTMLResponse(content=html, status_code=200)
 
 
 if __name__ == "__main__":

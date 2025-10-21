@@ -1,0 +1,186 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Draft Buddy – Public View</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 0; }
+    header { padding: 12px 16px; background: #0b6; color: #fff; }
+    main { padding: 16px; max-width: 1000px; margin: 0 auto; }
+    .card { border: 1px solid #8883; border-radius: 8px; padding: 12px; margin: 12px 0; background: #fff; }
+    .row { display: flex; gap: 12px; flex-wrap: wrap; }
+    .row > * { flex: 1 1 320px; }
+    table { border-collapse: collapse; width: 100%; }
+    th, td { border: 1px solid #ccc; padding: 6px 8px; text-align: left; }
+    th { background: #f5f5f5; }
+    .muted { opacity: .7; }
+    .error { color: #b00020; }
+    .ok { color: #0a0; }
+    code { background: #0001; padding: 0 4px; border-radius: 4px; }
+    a.btn { display: inline-block; padding: 6px 10px; border-radius: 6px; background: #0b6; color: #fff; text-decoration: none; }
+    .pill { font-size: 12px; padding: 2px 6px; border-radius: 999px; background: #0002; }
+  </style>
+  <script>
+    // Manager id is injected by the backend by replacing __MANAGER_ID__ placeholder
+    const MANAGER_ID = '__MANAGER_ID__';
+    const BASE = location.origin;
+    const SNAPSHOT_URL = `${BASE}/public/${MANAGER_ID}/snapshot.sqlite`;
+    const VERSION_URL = `${BASE}/public/${MANAGER_ID}/version`;
+
+    async function fetchText(url) {
+      const r = await fetch(url, { cache: 'no-store' });
+      if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
+      return await r.text();
+    }
+    async function fetchArrayBuffer(url) {
+      const r = await fetch(url, { cache: 'no-store' });
+      if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
+      return await r.arrayBuffer();
+    }
+
+    async function load() {
+      const statusEl = document.getElementById('status');
+      const versionEl = document.getElementById('version');
+      const dlEl = document.getElementById('downloadLink');
+      const tablesEl = document.getElementById('tables');
+      const summaryEl = document.getElementById('summary');
+
+      dlEl.href = SNAPSHOT_URL;
+
+      try {
+        const v = await fetchText(VERSION_URL);
+        versionEl.textContent = v === '0' ? 'not available yet' : new Date(parseInt(v,10)*1000).toLocaleString();
+      } catch (e) {
+        versionEl.textContent = 'unknown';
+      }
+
+      let SQL;
+      try {
+        // Load sql.js from CDN (no server changes needed)
+        const mod = await window.initSqlJs({ locateFile: f => `https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.8.0/${f}` });
+        SQL = mod;
+      } catch (e) {
+        statusEl.innerHTML = `<span class="error">Failed to load sql.js</span>`;
+        console.error(e);
+        return;
+      }
+
+      let dbBytes;
+      try {
+        dbBytes = new Uint8Array(await fetchArrayBuffer(SNAPSHOT_URL));
+      } catch (e) {
+        statusEl.innerHTML = `<span class="error">No snapshot available for <b>${MANAGER_ID}</b>. Ask your manager to upload from the app.</span>`;
+        console.warn(e);
+        return;
+      }
+
+      statusEl.innerHTML = `<span class="ok">Snapshot loaded (${(dbBytes.byteLength/1024).toFixed(1)} KB)</span>`;
+
+      const db = new SQL.Database(dbBytes);
+
+      // List tables
+      const res = db.exec("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name");
+      const tableNames = res.length ? res[0].values.flat() : [];
+      tablesEl.innerHTML = tableNames.map(n => `<span class="pill">${n}</span>`).join(' ');
+
+      // Try to infer some useful views if specific tables exist
+      // Best effort: standings from event_players/event_scores or similar
+      let html = '';
+      try {
+        // Heuristic queries guarded with try/catch to work across unknown schemas
+        // 1) If there's a table named standings (materialized), show it
+        if (tableNames.includes('standings')) {
+          html += renderQuery(db, 'Standings', 'SELECT * FROM standings');
+        } else if (tableNames.includes('event_players') && (tableNames.includes('events') || tableNames.includes('event'))) {
+          // Attempt a common schema pattern
+          const q = `
+            SELECT p.name AS player, COALESCE(p.points, 0) AS pts, COALESCE(p.wins, 0) AS wins, COALESCE(p.losses, 0) AS losses
+            FROM event_players p
+            ORDER BY pts DESC, wins DESC, player ASC
+          `;
+          html += renderQuery(db, 'Players', q);
+        }
+        // 2) Pairings/matches if matches table exists
+        if (tableNames.includes('matches')) {
+          html += renderQuery(db, 'Matches', 'SELECT * FROM matches ORDER BY round, table_no');
+        }
+      } catch (e) {
+        console.warn('Heuristic view failed', e);
+      }
+
+      if (!html) {
+        html = '<p class="muted">No known tables found. Use the Table Browser below.</p>';
+      }
+      summaryEl.innerHTML = html;
+
+      // Populate generic table browser
+      const selector = document.getElementById('tableSelector');
+      for (const n of tableNames) {
+        const opt = document.createElement('option');
+        opt.value = n; opt.textContent = n; selector.appendChild(opt);
+      }
+      selector.addEventListener('change', () => showTable(db, selector.value));
+      if (tableNames.length) showTable(db, tableNames[0]);
+    }
+
+    function renderQuery(db, title, sql) {
+      let rows = [];
+      let columns = [];
+      try {
+        const r = db.exec(sql);
+        if (r.length) {
+          columns = r[0].columns;
+          rows = r[0].values;
+        }
+      } catch (e) {
+        console.warn('Query failed', e);
+      }
+      if (!columns.length) return '';
+      const head = `<tr>${columns.map(c=>`<th>${escapeHtml(c)}</th>`).join('')}</tr>`;
+      const body = rows.map(row => `<tr>${row.map(v => `<td>${escapeHtml(String(v))}</td>`).join('')}</tr>`).join('');
+      return `<div class="card"><h3>${title}</h3><div class="table-wrap"><table>${head}${body}</table></div></div>`;
+    }
+
+    function showTable(db, name) {
+      const out = document.getElementById('tableOut');
+      out.innerHTML = renderQuery(db, `Table: ${name}`, `SELECT * FROM '${name}' LIMIT 500`);
+    }
+
+    function escapeHtml(s) { return s.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;','\'':'&#39;'}[c])); }
+
+    window.addEventListener('DOMContentLoaded', load);
+  </script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.8.0/sql-wasm.js" integrity="sha512-zqk9fZ8cWzqOAntXQf8Cm8S3C6uPbxP1h8z6oG3VtRvL1tq2Qd9BTw4q6uOqjN4pHq2E5Gkq3xYfQn0bYV3Z9w==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+</head>
+<body>
+  <header>
+    <h2 style="margin:0">Draft Buddy – Public View <small class="muted">(<span id="managerId">__MANAGER_ID__</span>)</small></h2>
+  </header>
+  <main>
+    <div class="row">
+      <div class="card">
+        <b>Snapshot version:</b> <span id="version" class="pill">checking…</span>
+      </div>
+      <div class="card">
+        <a id="downloadLink" class="btn" href="#" download>Download snapshot.sqlite</a>
+      </div>
+    </div>
+
+    <div class="card">
+      <div id="status" class="muted">Loading…</div>
+      <div><b>Tables:</b> <span id="tables"></span></div>
+    </div>
+
+    <div id="summary"></div>
+
+    <div class="card">
+      <h3>Table Browser</h3>
+      <label>Select a table: <select id="tableSelector"></select></label>
+      <div id="tableOut" style="margin-top:8px"></div>
+      <p class="muted">Note: This view is read‑only and updates when the manager uploads a new snapshot from the app.</p>
+    </div>
+  </main>
+</body>
+</html>
