@@ -175,9 +175,10 @@
         <div>Round: <b>${ev.current_round ?? 0}</b> / ${ev.rounds ?? '?'}</div>
         <div>Round started: <span class="pill">${when}</span></div>
       `;
-      // Cache active id for pairings
+      // Cache active id for pairings/scoreboard
       window.__ACTIVE_EVENT_ID__ = ev.id;
       window.__ACTIVE_ROUND__ = ev.current_round ?? 0;
+      window.__ACTIVE_EVENT_STATUS__ = (ev.status || '').toLowerCase();
     }
 
     function renderPairingsSection(db, tableNames) {
@@ -188,7 +189,53 @@
       }
       const evId = window.__ACTIVE_EVENT_ID__;
       const rnd = window.__ACTIVE_ROUND__;
-      if (!evId || !rnd) {
+      const status = (window.__ACTIVE_EVENT_STATUS__ || '').toLowerCase();
+      const isClosed = ['closed','finished','ended','complete','completed'].includes(status);
+      if (!evId) {
+        el.innerHTML = '<p class="muted">No event selected.</p>';
+        return;
+      }
+      if (isClosed) {
+        // Render scoreboard for the finished event
+        const sql = `
+          SELECT
+            COALESCE(p.nickname, p.name, ep.guest_name) AS name,
+            SUM(CASE WHEN m.player1 = ep.id THEN m.score_p1 ELSE m.score_p2 END) AS pf,
+            SUM(CASE WHEN m.player1 = ep.id THEN m.score_p2 ELSE m.score_p1 END) AS pa,
+            SUM(CASE WHEN (CASE WHEN m.player1 = ep.id THEN m.score_p1 ELSE m.score_p2 END) > (CASE WHEN m.player1 = ep.id THEN m.score_p2 ELSE m.score_p1 END) THEN 1 ELSE 0 END) AS wins,
+            SUM(CASE WHEN (CASE WHEN m.player1 = ep.id THEN m.score_p1 ELSE m.score_p2 END) < (CASE WHEN m.player1 = ep.id THEN m.score_p2 ELSE m.score_p1 END) THEN 1 ELSE 0 END) AS losses,
+            SUM(CASE WHEN (CASE WHEN m.player1 = ep.id THEN m.score_p1 ELSE m.score_p2 END) = (CASE WHEN m.player1 = ep.id THEN m.score_p2 ELSE m.score_p1 END) THEN 1 ELSE 0 END) AS ties,
+            SUM(CASE WHEN (CASE WHEN m.player1 = ep.id THEN m.score_p1 ELSE m.score_p2 END) > (CASE WHEN m.player1 = ep.id THEN m.score_p2 ELSE m.score_p1 END) THEN 3 WHEN (CASE WHEN m.player1 = ep.id THEN m.score_p1 ELSE m.score_p2 END) = (CASE WHEN m.player1 = ep.id THEN m.score_p2 ELSE m.score_p1 END) THEN 1 ELSE 0 END) AS mp
+          FROM event_players ep
+          LEFT JOIN players p ON p.id = ep.player_id
+          JOIN matches m ON m.event_id = ep.event_id AND (m.player1 = ep.id OR m.player2 = ep.id)
+          WHERE ep.event_id = ${evId}
+          GROUP BY ep.id, name
+          ORDER BY mp DESC, (pf - pa) DESC, name ASC
+        `;
+        const r = db.exec(sql);
+        if (!r.length || !r[0].values.length) {
+          el.innerHTML = '<p class="muted">No results available.</p>';
+          return;
+        }
+        const rows = r[0].values.map(v => {
+          const name = v[0];
+          const pf = v[1] || 0;
+          const pa = v[2] || 0;
+          const wins = v[3] || 0;
+          const losses = v[4] || 0;
+          const ties = v[5] || 0;
+          const mp = v[6] || 0;
+          const diff = (pf - pa) || 0;
+          return [name, wins, losses, ties, mp, pf, pa, diff];
+        });
+        const head = `<tr><th>Player</th><th>W</th><th>L</th><th>T</th><th>MP</th><th>PF</th><th>PA</th><th>Diff</th></tr>`;
+        const body = rows.map(row => `<tr>${row.map(x => `<td>${escapeHtml(String(x))}</td>`).join('')}</tr>`).join('');
+        el.innerHTML = `<div class="card"><h3>Scoreboard</h3><table>${head}${body}</table></div>`;
+        return;
+      }
+      // Otherwise, show current round pairings
+      if (!rnd) {
         el.innerHTML = '<p class="muted">No active round.</p>';
         return;
       }
@@ -250,6 +297,7 @@
                bp.c0,bp.c1,bp.c2,bp.c3,bp.c4,bp.c5,bp.c6,bp.c7,bp.c8
         FROM bingo_players bp
         INNER JOIN players p ON p.id = bp.player_id
+        WHERE (IFNULL(bp.c0,0)+IFNULL(bp.c1,0)+IFNULL(bp.c2,0)+IFNULL(bp.c3,0)+IFNULL(bp.c4,0)+IFNULL(bp.c5,0)+IFNULL(bp.c6,0)+IFNULL(bp.c7,0)+IFNULL(bp.c8,0)) > 0
         ORDER BY name ASC
       `;
       const r = db.exec(q);
@@ -327,7 +375,7 @@
         gridEl.innerHTML = labels.map((lab, i) => {
           const checked = cells[i];
           const inWin = completeIdx.some(ci => lines[ci].includes(i));
-          return `<div class="bingo-cell${checked?' checked':''}${inWin?' win':''}"><div class="bingo-lab">${escapeHtml(String(lab))}</div>${checked? '✓' : ''}</div>`;
+          return `<div class="bingo-cell${checked?' checked':''}${inWin?' win':''}"><div class="bingo-lab">${escapeHtml(String(lab))}</div></div>`;
         }).join('');
         const lineNames = ['Row 1','Row 2','Row 3','Col 1','Col 2','Col 3','Diag ↘','Diag ↙'];
         linesEl.textContent = completeIdx.length ? `Completed: ${completeIdx.map(i=>lineNames[i]).join(', ')}` : 'No complete lines yet.';
