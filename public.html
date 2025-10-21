@@ -21,6 +21,15 @@
     code { background: #0001; padding: 0 4px; border-radius: 4px; }
     a.btn { display: inline-block; padding: 6px 10px; border-radius: 6px; background: #0b6; color: #fff; text-decoration: none; }
     .pill { font-size: 12px; padding: 2px 6px; border-radius: 999px; background: #0002; }
+    .bingo { display: flex; gap: 16px; align-items: flex-start; flex-wrap: wrap; }
+    .bingo-players { display: flex; gap: 8px; flex-wrap: wrap; max-width: 100%; }
+    .bingo-players .btn { background: #eee; color: #000; border: 1px solid #ccc; }
+    .bingo-players .btn.sel { background: #0b6; color: #fff; border-color: #0b6; }
+    .bingo-grid { display: grid; grid-template-columns: repeat(3, minmax(64px, 1fr)); gap: 6px; }
+    .bingo-cell { border: 1px solid #ccc; border-radius: 6px; padding: 12px; text-align: center; min-width: 64px; min-height: 48px; display: flex; align-items: center; justify-content: center; flex-direction: column; }
+    .bingo-cell .bingo-lab { font-size: 12px; opacity: .7; margin-bottom: 4px; }
+    .bingo-cell.checked { background: #0b62; border-color: #0b6; }
+    .bingo-cell.win { box-shadow: inset 0 0 0 2px #0b6; }
   </style>
   <script>
     // Manager id is injected by the backend by replacing __MANAGER_ID__ placeholder
@@ -80,7 +89,7 @@
       // List tables
       const res = db.exec("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name");
       const tableNames = res.length ? res[0].values.flat() : [];
-      tablesEl.innerHTML = tableNames.map(n => `<span class="pill">${n}</span>`).join(' ');
+      if (tablesEl) tablesEl.innerHTML = tableNames.map(n => `<span class="pill">${n}</span>`).join(' ');
 
       // Dashboard sections
       try { renderActiveEventSection(db, tableNames); } catch (e) { console.warn(e); }
@@ -88,14 +97,16 @@
       try { renderBingoSection(db, tableNames); } catch (e) { console.warn(e); }
       try { renderLeagueSection(db, tableNames); } catch (e) { console.warn(e); }
 
-      // Populate generic table browser
+      // Populate generic table browser (hidden on public view)
       const selector = document.getElementById('tableSelector');
-      for (const n of tableNames) {
-        const opt = document.createElement('option');
-        opt.value = n; opt.textContent = n; selector.appendChild(opt);
+      if (selector) {
+        for (const n of tableNames) {
+          const opt = document.createElement('option');
+          opt.value = n; opt.textContent = n; selector.appendChild(opt);
+        }
+        selector.addEventListener('change', () => showTable(db, selector.value));
+        if (tableNames.length) showTable(db, tableNames[0]);
       }
-      selector.addEventListener('change', () => showTable(db, selector.value));
-      if (tableNames.length) showTable(db, tableNames[0]);
     }
 
     function renderQuery(db, title, sql) {
@@ -177,8 +188,9 @@
       }
       const sql = `
         SELECT m.round,
-               COALESCE(p1.nickname, p1.name, 'BYE') AS p1,
-               COALESCE(p2.nickname, p2.name, 'BYE') AS p2,
+               p1.nickname AS p1nick, p1.name AS p1name,
+               p2.nickname AS p2nick, p2.name AS p2name,
+               m.player1, m.player2,
                m.score_p1 AS s1,
                m.score_p2 AS s2,
                m.bye
@@ -193,7 +205,21 @@
         el.innerHTML = '<p class="muted">No pairings for current round.</p>';
         return;
       }
-      const rows = r[0].values.map(v => [v[1], v[3] != null ? v[3] : '', '-', v[2], v[4] != null ? v[4] : '']);
+      const rows = r[0].values.map(v => {
+        const p1id = v[5];
+        const p2id = v[6];
+        const s1 = v[7] != null ? v[7] : '';
+        const s2 = v[8] != null ? v[8] : '';
+        const bye = v[9] ? 1 : 0;
+        let p1 = v[1] || v[2] || '';
+        let p2 = v[3] || v[4] || '';
+        if (bye) {
+          if (p1id == null && p2id != null) { p1 = 'BYE'; }
+          else if (p2id == null && p1id != null) { p2 = 'BYE'; }
+          else { /* both null? */ p1 = p1 || 'BYE'; p2 = p2 || 'BYE'; }
+        }
+        return [p1 || '—', s1, '-', p2 || '—', s2];
+      });
       const head = `<tr><th>Player 1</th><th>Score</th><th></th><th>Player 2</th><th>Score</th></tr>`;
       const body = rows.map(row => `<tr>${row.map(x => `<td>${escapeHtml(String(x))}</td>`).join('')}</tr>`).join('');
       el.innerHTML = `<table>${head}${body}</table>`;
@@ -205,35 +231,87 @@
         el.innerHTML = '<p class="muted">Bingo not configured.</p>';
         return;
       }
-      const meta = getSingle(db, 'SELECT row0,row1,row2,col0,col1,col2,diag0,diag1,full FROM bingo_meta WHERE id=1');
-      let metaBadges = '';
-      if (meta) {
-        const labels = [];
-        if (meta.row0) labels.push('Row 1');
-        if (meta.row1) labels.push('Row 2');
-        if (meta.row2) labels.push('Row 3');
-        if (meta.col0) labels.push('Col 1');
-        if (meta.col1) labels.push('Col 2');
-        if (meta.col2) labels.push('Col 3');
-        if (meta.diag0) labels.push('Diag ↘');
-        if (meta.diag1) labels.push('Diag ↙');
-        if (meta.full) labels.push('Full Bingo');
-        if (labels.length) metaBadges = labels.map(x=>`<span class="pill">${x}</span>`).join(' ');
-      }
-      const rs = db.exec(`
-        SELECT COALESCE(p.nickname,p.name,'Player') AS player,
-               (bp.c0+bp.c1+bp.c2+bp.c3+bp.c4+bp.c5+bp.c6+bp.c7+bp.c8) AS marks
+      const meta = getSingle(db, 'SELECT row0,row1,row2,col0,col1,col2,diag0,diag1,full, win_row0,win_row1,win_row2,win_col0,win_col1,win_col2,win_diag0,win_diag1,win_full FROM bingo_meta WHERE id=1');
+      const q = `
+        SELECT bp.player_id,
+               COALESCE(p.nickname, p.name, 'Player') AS name,
+               bp.c0,bp.c1,bp.c2,bp.c3,bp.c4,bp.c5,bp.c6,bp.c7,bp.c8
         FROM bingo_players bp
-        LEFT JOIN players p ON p.id = bp.player_id
-        ORDER BY marks DESC, player ASC
-      `);
-      if (!rs.length || !rs[0].values.length) {
-        el.innerHTML = '<p class="muted">No bingo progress yet.</p>';
+        INNER JOIN players p ON p.id = bp.player_id
+        ORDER BY name ASC
+      `;
+      const r = db.exec(q);
+      if (!r.length || !r[0].values.length) {
+        el.innerHTML = '<p class="muted">No bingo players yet.</p>';
         return;
       }
-      const head = `<tr><th>Player</th><th>Marks</th></tr>`;
-      const body = rs[0].values.map(v => `<tr><td>${escapeHtml(String(v[0]))}</td><td>${v[1]}</td></tr>`).join('');
-      el.innerHTML = `${metaBadges ? `<div style="margin-bottom:6px">${metaBadges}</div>`:''}<table>${head}${body}</table>`;
+      const cols = r[0].columns;
+      const players = r[0].values.map(row => ({
+        id: row[0],
+        name: row[1],
+        cells: row.slice(2, 11).map(x => !!x)
+      }));
+      // Build UI containers
+      el.innerHTML = `
+        ${meta ? renderBingoMeta(meta, players) : ''}
+        <div class="bingo">
+          <div id="bingoPlayers" class="bingo-players"></div>
+          <div>
+            <div id="bingoGrid" class="bingo-grid"></div>
+            <div id="bingoLines" class="muted" style="margin-top:6px"></div>
+          </div>
+        </div>
+      `;
+      const listEl = document.getElementById('bingoPlayers');
+      const gridEl = document.getElementById('bingoGrid');
+      const linesEl = document.getElementById('bingoLines');
+      let selected = players[0];
+      function renderPlayerList() {
+        listEl.innerHTML = players.map(p => `<button class="btn${p.id===selected.id?' sel':''}" data-id="${p.id}">${escapeHtml(p.name)}</button>`).join(' ');
+        for (const btn of listEl.querySelectorAll('button')) {
+          btn.addEventListener('click', () => {
+            const id = parseInt(btn.getAttribute('data-id'), 10);
+            selected = players.find(x => x.id === id) || selected;
+            renderPlayerList();
+            renderGrid();
+          });
+        }
+      }
+      function renderGrid() {
+        const labels = ['1','2','3','4','5','6','7','8','9'];
+        const cells = selected.cells;
+        const lines = [ [0,1,2], [3,4,5], [6,7,8], [0,3,6], [1,4,7], [2,5,8], [0,4,8], [2,4,6] ];
+        const completeIdx = lines.map((idx, i) => idx.every(j => cells[j]) ? i : -1).filter(i => i >= 0);
+        gridEl.innerHTML = labels.map((lab, i) => {
+          const checked = cells[i];
+          const inWin = completeIdx.some(ci => lines[ci].includes(i));
+          return `<div class="bingo-cell${checked?' checked':''}${inWin?' win':''}"><div class="bingo-lab">${lab}</div>${checked? '✓' : ''}</div>`;
+        }).join('');
+        const lineNames = ['Row 1','Row 2','Row 3','Col 1','Col 2','Col 3','Diag ↘','Diag ↙'];
+        linesEl.textContent = completeIdx.length ? `Completed: ${completeIdx.map(i=>lineNames[i]).join(', ')}` : 'No complete lines yet.';
+      }
+      renderPlayerList();
+      renderGrid();
+    }
+
+    function renderBingoMeta(meta, players){
+      const winnerLabel = (pid) => {
+        if (pid == null) return '';
+        const p = players.find(x => x.id === pid);
+        return p ? p.name : `Player ${pid}`;
+      };
+      const chunks = [];
+      if (meta.row0) chunks.push(`<span class="pill">Row 1${meta.win_row0?': '+winnerLabel(meta.win_row0):''}</span>`);
+      if (meta.row1) chunks.push(`<span class="pill">Row 2${meta.win_row1?': '+winnerLabel(meta.win_row1):''}</span>`);
+      if (meta.row2) chunks.push(`<span class="pill">Row 3${meta.win_row2?': '+winnerLabel(meta.win_row2):''}</span>`);
+      if (meta.col0) chunks.push(`<span class="pill">Col 1${meta.win_col0?': '+winnerLabel(meta.win_col0):''}</span>`);
+      if (meta.col1) chunks.push(`<span class="pill">Col 2${meta.win_col1?': '+winnerLabel(meta.win_col1):''}</span>`);
+      if (meta.col2) chunks.push(`<span class="pill">Col 3${meta.win_col2?': '+winnerLabel(meta.win_col2):''}</span>`);
+      if (meta.diag0) chunks.push(`<span class="pill">Diag ↘${meta.win_diag0?': '+winnerLabel(meta.win_diag0):''}</span>`);
+      if (meta.diag1) chunks.push(`<span class="pill">Diag ↙${meta.win_diag1?': '+winnerLabel(meta.win_diag1):''}</span>`);
+      if (meta.full) chunks.push(`<span class="pill">Full Bingo${meta.win_full?': '+winnerLabel(meta.win_full):''}</span>`);
+      if (!chunks.length) return '';
+      return `<div style="margin-bottom:6px">${chunks.join(' ')}</div>`;
     }
 
     function renderLeagueSection(db, tableNames) {
@@ -262,7 +340,7 @@
         )
         SELECT COALESCE(p.nickname,p.name,'Player') AS player, SUM(w) AS wins, SUM(l) AS losses
         FROM wins
-        LEFT JOIN players p ON p.id = pid
+        INNER JOIN players p ON p.id = pid
         GROUP BY pid
         HAVING (wins + losses) > 0
         ORDER BY wins DESC, losses ASC, player ASC
@@ -293,7 +371,6 @@
 
     <div class="card">
       <div id="status" class="muted">Loading…</div>
-      <div><b>Tables:</b> <span id="tables"></span></div>
     </div>
 
     <div id="summary"></div>
@@ -318,12 +395,6 @@
       <div id="league"></div>
     </div>
 
-    <div class="card">
-      <h3>Table Browser</h3>
-      <label>Select a table: <select id="tableSelector"></select></label>
-      <div id="tableOut" style="margin-top:8px"></div>
-      <p class="muted">Note: This view is read‑only and updates when the manager uploads a new snapshot from the app.</p>
-    </div>
   </main>
 </body>
 </html>
