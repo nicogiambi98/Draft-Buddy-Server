@@ -14,7 +14,7 @@ from typing import Optional
 import logging
 
 from fastapi import FastAPI, UploadFile, File, HTTPException, Header, Request
-from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, HTMLResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, HTMLResponse, RedirectResponse
 from pydantic import BaseModel
 import jwt
 try:
@@ -67,12 +67,19 @@ if _raw_users:
             parts.append(s)
 
 for part in parts:
-    # format username:password@manager_id
+    # format username:password@manager_id[#role]
     try:
-        creds, manager_id = part.split("@", 1)
+        creds, manager_info = part.split("@", 1)
         username, password = creds.split(":", 1)
         username = (username or "").strip()
-        USERS.setdefault(username, []).append({"password": password, "manager_id": manager_id})
+        # Optional role after '#': default to 'manager' for backward compatibility
+        if "#" in manager_info:
+            manager_id, role = manager_info.split("#", 1)
+            role = (role or "manager").strip().lower()
+        else:
+            manager_id, role = manager_info, "manager"
+        manager_id = (manager_id or "").strip()
+        USERS.setdefault(username, []).append({"password": password, "manager_id": manager_id, "role": role})
     except ValueError:
         logging.getLogger("draftbuddy").warning("Skipping invalid users.txt entry: %s", part)
 
@@ -188,8 +195,20 @@ class LoginBody(BaseModel):
 
 
 @app.get("/health")
-def health():
-    return {"status": "ok", "time": time.time()}
+def health(request: Request):
+    base = str(request.base_url).rstrip("/")
+    return {
+        "status": "ok",
+        "time": time.time(),
+        "links": {
+            "root": f"{base}/",
+            "login": f"{base}/auth/login",
+            "upload": f"{base}/db/upload",
+            "download": f"{base}/db/download",
+            "public_example_snapshot": f"{base}/public/default/snapshot.sqlite",
+            "public_example_view": f"{base}/public/default/view",
+        }
+    }
 
 
 @app.post("/auth/login")
@@ -198,12 +217,6 @@ def auth_login(body: LoginBody):
     if not entries:
         logger.info("Login failed for user=%s", getattr(body, 'username', '?'))
         raise HTTPException(status_code=401, detail="Invalid credentials")
-    # Determine role: any username starting with "manager" (case-insensitive) is a manager; others are guests
-    try:
-        uname = (body.username or "").strip().lower()
-    except Exception:
-        uname = ""
-    role = "manager" if uname.startswith("manager") else "guest"
     # Determine playgroup (default to 'clandestini' when blank/omitted)
     provided_pg = ((body.playgroup or "").strip()) if getattr(body, 'playgroup', None) is not None else ""
     if not provided_pg:
@@ -223,6 +236,7 @@ def auth_login(body: LoginBody):
         logger.info("Login failed for user=%s (no matching username:password@playgroup)", getattr(body, 'username', '?'))
         raise HTTPException(status_code=401, detail="Invalid credentials")
     manager_id = provided_pg
+    role = (match.get("role") or "manager")
     exp_days = 90 if body.remember else 1
     exp = datetime.now(timezone.utc) + timedelta(days=exp_days)
     token = jwt.encode({
@@ -357,6 +371,11 @@ def public_view(manager_id: str):
         html = f.read()
     html = html.replace("__MANAGER_ID__", manager_id)
     return HTMLResponse(content=html, status_code=200)
+
+
+@app.get("/public/{manager_id}")
+def public_redirect(manager_id: str):
+    return RedirectResponse(url=f"/public/{manager_id}/view", status_code=307)
 
 
 if __name__ == "__main__":
