@@ -21,13 +21,15 @@
     code { background: #0001; padding: 0 4px; border-radius: 4px; }
     a.btn { display: inline-block; padding: 6px 10px; border-radius: 6px; background: #0b6; color: #fff; text-decoration: none; }
     .pill { font-size: 12px; padding: 2px 6px; border-radius: 999px; background: #0002; }
-    .bingo { display: flex; gap: 16px; align-items: flex-start; flex-wrap: wrap; }
-    .bingo-players { display: flex; gap: 8px; flex-wrap: wrap; max-width: 100%; }
-    .bingo-players .btn { background: #eee; color: #000; border: 1px solid #ccc; }
+    .bingo { display: flex; gap: 16px; align-items: stretch; flex-wrap: nowrap; }
+    .bingo-sidebar { flex: 0 0 280px; max-width: 100%; }
+    .bingo-players { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; max-height: 280px; overflow: auto; padding-right: 4px; }
+    .bingo-players .btn { background: #f7f7f7; color: #000; border: 1px solid #ccc; border-radius: 8px; padding: 8px 10px; cursor: pointer; box-shadow: 0 1px 2px #0001; }
+    .bingo-players .btn:hover { background: #eee; }
     .bingo-players .btn.sel { background: #0b6; color: #fff; border-color: #0b6; }
     .bingo-grid { display: grid; grid-template-columns: repeat(3, minmax(64px, 1fr)); gap: 6px; }
-    .bingo-cell { border: 1px solid #ccc; border-radius: 6px; padding: 12px; text-align: center; min-width: 64px; min-height: 48px; display: flex; align-items: center; justify-content: center; flex-direction: column; }
-    .bingo-cell .bingo-lab { font-size: 12px; opacity: .7; margin-bottom: 4px; }
+    .bingo-cell { border: 1px solid #ccc; border-radius: 8px; padding: 10px; text-align: center; min-width: 64px; min-height: 64px; display: flex; align-items: center; justify-content: center; flex-direction: column; }
+    .bingo-cell .bingo-lab { font-size: 12px; opacity: .9; margin-bottom: 6px; }
     .bingo-cell.checked { background: #0b62; border-color: #0b6; }
     .bingo-cell.win { box-shadow: inset 0 0 0 2px #0b6; }
   </style>
@@ -188,15 +190,19 @@
       }
       const sql = `
         SELECT m.round,
-               p1.nickname AS p1nick, p1.name AS p1name,
-               p2.nickname AS p2nick, p2.name AS p2name,
+               COALESCE(p1.nickname, p1.name, ep1.guest_name) AS p1name,
+               COALESCE(p2.nickname, p2.name, ep2.guest_name) AS p2name,
                m.player1, m.player2,
                m.score_p1 AS s1,
                m.score_p2 AS s2,
-               m.bye
+               m.bye,
+               ep1.id AS ep1_id,
+               ep2.id AS ep2_id
         FROM matches m
-        LEFT JOIN players p1 ON p1.id = m.player1
-        LEFT JOIN players p2 ON p2.id = m.player2
+        LEFT JOIN event_players ep1 ON ep1.id = m.player1
+        LEFT JOIN event_players ep2 ON ep2.id = m.player2
+        LEFT JOIN players p1 ON p1.id = ep1.player_id
+        LEFT JOIN players p2 ON p2.id = ep2.player_id
         WHERE m.event_id = ${evId} AND m.round = ${rnd}
         ORDER BY m.id
       `;
@@ -206,17 +212,19 @@
         return;
       }
       const rows = r[0].values.map(v => {
-        const p1id = v[5];
-        const p2id = v[6];
-        const s1 = v[7] != null ? v[7] : '';
-        const s2 = v[8] != null ? v[8] : '';
-        const bye = v[9] ? 1 : 0;
-        let p1 = v[1] || v[2] || '';
-        let p2 = v[3] || v[4] || '';
+        const p1name = v[1];
+        const p2name = v[2];
+        const s1 = v[5] != null ? v[5] : '';
+        const s2 = v[6] != null ? v[6] : '';
+        const bye = v[7] ? 1 : 0;
+        const ep1id = v[8];
+        const ep2id = v[9];
+        let p1 = p1name || '';
+        let p2 = p2name || '';
         if (bye) {
-          if (p1id == null && p2id != null) { p1 = 'BYE'; }
-          else if (p2id == null && p1id != null) { p2 = 'BYE'; }
-          else { /* both null? */ p1 = p1 || 'BYE'; p2 = p2 || 'BYE'; }
+          if ((ep1id == null || ep1id === undefined) && (ep2id != null)) { p1 = 'BYE'; }
+          else if ((ep2id == null || ep2id === undefined) && (ep1id != null)) { p2 = 'BYE'; }
+          else { p1 = p1 || 'BYE'; p2 = p2 || 'BYE'; }
         }
         return [p1 || '—', s1, '-', p2 || '—', s2];
       });
@@ -255,8 +263,10 @@
       el.innerHTML = `
         ${meta ? renderBingoMeta(meta, players) : ''}
         <div class="bingo">
-          <div id="bingoPlayers" class="bingo-players"></div>
-          <div>
+          <div class="bingo-sidebar">
+            <div id="bingoPlayers" class="bingo-players"></div>
+          </div>
+          <div style="flex:1; min-width:240px;">
             <div id="bingoGrid" class="bingo-grid"></div>
             <div id="bingoLines" class="muted" style="margin-top:6px"></div>
           </div>
@@ -265,6 +275,18 @@
       const listEl = document.getElementById('bingoPlayers');
       const gridEl = document.getElementById('bingoGrid');
       const linesEl = document.getElementById('bingoLines');
+      // Load labels from DB if present; fallback to numbers
+      let labels = ['1','2','3','4','5','6','7','8','9'];
+      try {
+        const lr = db.exec("SELECT id,title FROM bingo_achievements ORDER BY id ASC");
+        if (lr.length && lr[0].values.length) {
+          const tmp = [];
+          for (const [id, title] of lr[0].values) {
+            tmp[Number(id)] = String(title);
+          }
+          if (tmp.filter(Boolean).length === 9) labels = tmp;
+        }
+      } catch(e) { /* ignore */ }
       let selected = players[0];
       function renderPlayerList() {
         listEl.innerHTML = players.map(p => `<button class="btn${p.id===selected.id?' sel':''}" data-id="${p.id}">${escapeHtml(p.name)}</button>`).join(' ');
