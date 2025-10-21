@@ -315,28 +315,55 @@
       // Load labels from DB if present; prefer DB only (no remote JSON fallback)
       let labels = ['1','2','3','4','5','6','7','8','9'];
       try {
-        const lr = db.exec("SELECT id, COALESCE(NULLIF(TRIM(title),''), NULLIF(TRIM(name),''), NULLIF(TRIM(label),''), NULLIF(TRIM(text),''), NULLIF(TRIM(description),'')) AS lab FROM bingo_achievements ORDER BY id ASC");
-        if (lr.length && lr[0].values.length) {
-          const tmp = new Array(9);
-          let fallbackIdx = 0;
-          for (const row of lr[0].values) {
-            const rawId = Number(row[0]);
-            const lab = row[1];
-            if (lab == null || String(lab).trim().length === 0) continue;
-            let slot = Number.isFinite(rawId) ? rawId : NaN;
-            if (!Number.isNaN(slot)) {
-              // Normalize 1..9 into 0..8
-              if (slot >= 1 && slot <= 9) slot = slot - 1;
-            }
-            if (Number.isNaN(slot) || slot < 0 || slot > 8) {
-              // If id is not a recognized index, place by order if space remains
-              while (fallbackIdx < 9 && tmp[fallbackIdx] != null) fallbackIdx++;
-              if (fallbackIdx < 9) tmp[fallbackIdx] = String(lab);
-            } else {
-              tmp[slot] = String(lab);
-            }
+        // Be schema-agnostic: inspect table columns first
+        const ti = db.exec("PRAGMA table_info(bingo_achievements)");
+        if (ti.length && ti[0].values.length) {
+          const colNames = ti[0].values.map(r => String(r[1]));
+          const idCands = ['id','idx','index','slot','position','pos','num','number'];
+          const labCands = ['title','name','label','text','description','achievement','ach','ach_text','value'];
+          const idCols = idCands.filter(n => colNames.includes(n));
+          let labelCols = labCands.filter(n => colNames.includes(n));
+          if (!labelCols.length) {
+            // Fall back to any non-id columns
+            labelCols = colNames.filter(n => !idCands.includes(n) && !['cid','pk','rowid'].includes(n));
           }
-          labels = tmp.map((v,i)=> v ?? labels[i]);
+          const orderCol = idCols.length ? idCols[0] : null;
+          const lr = db.exec(`SELECT * FROM bingo_achievements ${orderCol ? `ORDER BY ${orderCol} ASC` : ''}`);
+          if (lr.length && lr[0].values.length) {
+            const tmp = new Array(9);
+            let fallbackIdx = 0;
+            const colIndex = {};
+            lr[0].columns.forEach((n,i)=>{ colIndex[n] = i; });
+            for (const row of lr[0].values) {
+              // Pick label
+              let lab = null;
+              for (const cn of labelCols) {
+                const i = colIndex[cn];
+                if (i == null) continue;
+                const v = row[i];
+                if (v != null && String(v).trim().length > 0) { lab = String(v); break; }
+              }
+              if (!lab) continue;
+              // Determine slot/index
+              let slot = NaN;
+              for (const cn of idCols) {
+                const i = colIndex[cn];
+                if (i == null) continue;
+                const v = Number(row[i]);
+                if (Number.isFinite(v)) { slot = v; break; }
+              }
+              if (!Number.isNaN(slot)) {
+                if (slot >= 1 && slot <= 9) slot = slot - 1; // normalize 1..9 -> 0..8
+              }
+              if (Number.isNaN(slot) || slot < 0 || slot > 8) {
+                while (fallbackIdx < 9 && tmp[fallbackIdx] != null) fallbackIdx++;
+                if (fallbackIdx < 9) tmp[fallbackIdx] = lab;
+              } else {
+                tmp[slot] = lab;
+              }
+            }
+            for (let i = 0; i < 9; i++) { if (tmp[i]) labels[i] = tmp[i]; }
+          }
         }
       } catch(e) { /* ignore */ }
       let selected = players.length ? players[0] : null;
