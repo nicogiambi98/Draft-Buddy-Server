@@ -361,29 +361,6 @@ def public_version(manager_id: str):
     return PlainTextResponse(v, media_type="text/plain")
 
 
-@app.get("/public/{manager_id}/achievements.json")
-def public_achievements(manager_id: str):
-    """Serve achievements.json so the public page can fall back to it when
-    older snapshots don't include bingo_achievements. manager_id is unused
-    but kept in the path for consistency and potential multi-domain hosting."""
-    try:
-        # achievements-old.json is located in project root; this file is in server/
-        root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        ach_path = os.path.join(root_dir, "achievements.json")
-        if not os.path.exists(ach_path):
-            logger.warning("achievements.json not found at %s", ach_path)
-            return JSONResponse({"achievements": []})
-        import json
-        with open(ach_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        # Ensure structure
-        achievements = data.get("achievements")
-        if not isinstance(achievements, list):
-            achievements = []
-        return JSONResponse({"achievements": achievements})
-    except Exception as e:
-        logger.exception("Failed to serve achievements.json: %s", e)
-        return JSONResponse({"achievements": []})
 
 
 # Root helpful message

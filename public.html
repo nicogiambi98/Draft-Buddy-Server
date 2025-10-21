@@ -274,11 +274,11 @@
 
     function renderBingoSection(db, tableNames) {
       const el = document.getElementById('bingo');
-      if (!(tableNames.includes('bingo_players') && tableNames.includes('bingo_meta'))) {
+      if (!tableNames.includes('bingo_players')) {
         el.innerHTML = '<p class="muted">Bingo not configured.</p>';
         return;
       }
-      const meta = getSingle(db, 'SELECT row0,row1,row2,col0,col1,col2,diag0,diag1,full, win_row0,win_row1,win_row2,win_col0,win_col1,win_col2,win_diag0,win_diag1,win_full FROM bingo_meta WHERE id=1');
+      const meta = tableNames.includes('bingo_meta') ? getSingle(db, 'SELECT row0,row1,row2,col0,col1,col2,diag0,diag1,full, win_row0,win_row1,win_row2,win_col0,win_col1,win_col2,win_diag0,win_diag1,win_full FROM bingo_meta WHERE id=1') : null;
       const q = `
         SELECT bp.player_id,
                COALESCE(p.nickname, p.name, 'Player') AS name,
@@ -368,18 +368,6 @@
       }
       renderPlayerList();
       renderGrid();
-      // If DB lacks labels, try fetching from server-side achievements-old.json as a runtime fallback
-      if (!hasDbLabels) {
-        fetch(`${BASE}/public/${MANAGER_ID}/achievements.json`, { cache: 'no-store' })
-          .then(r => r.ok ? r.json() : Promise.reject(new Error(`${r.status} ${r.statusText}`)))
-          .then(j => {
-            if (j && Array.isArray(j.achievements)) {
-              const x = j.achievements.slice(0, 9).map(v => String(v));
-              if (x.length === 9 && x.every(Boolean)) { labels = x; renderGrid(); }
-            }
-          })
-          .catch(() => {/* ignore */});
-      }
     }
 
     function renderBingoMeta(meta, players){
