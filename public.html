@@ -313,7 +313,7 @@
       const gridEl = document.getElementById('bingoGrid');
       const linesEl = document.getElementById('bingoLines');
       // Load labels from DB if present; prefer DB only (no remote JSON fallback)
-      let labels = ['0','1','2','3','4','5','6','7','8'];
+      let labels = ['1','2','3','4','5','6','7','8','9'];
       try {
         // Be schema-agnostic: inspect table columns first
         const ti = db.exec("PRAGMA table_info(bingo_achievements)");
@@ -351,9 +351,6 @@
                 if (i == null) continue;
                 const v = Number(row[i]);
                 if (Number.isFinite(v)) { slot = v; break; }
-              }
-              if (!Number.isNaN(slot)) {
-                if (slot >= 1 && slot <= 9) slot = slot - 1; // normalize 1..9 -> 0..8
               }
               if (Number.isNaN(slot) || slot < 0 || slot > 8) {
                 while (fallbackIdx < 9 && tmp[fallbackIdx] != null) fallbackIdx++;
