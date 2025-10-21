@@ -5,33 +5,37 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Draft Buddy – Public View</title>
   <style>
-    :root { color-scheme: light dark; }
-    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 0; }
-    header { padding: 12px 16px; background: #0b6; color: #fff; }
+    :root { color-scheme: dark; }
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 0; background:#121212; color:#e6e6e6; }
+    header { padding: 12px 16px; background: #0a5a3f; color: #fff; }
     main { padding: 16px; max-width: 1000px; margin: 0 auto; }
-    .card { border: 1px solid #8883; border-radius: 8px; padding: 12px; margin: 12px 0; background: #fff; }
+    .card { border: 1px solid #2a2a2a; border-radius: 10px; padding: 12px; margin: 12px 0; background: #1a1a1a; box-shadow: 0 2px 6px #0006; }
     .row { display: flex; gap: 12px; flex-wrap: wrap; }
     .row > * { flex: 1 1 320px; }
     table { border-collapse: collapse; width: 100%; }
-    th, td { border: 1px solid #ccc; padding: 6px 8px; text-align: left; }
-    th { background: #f5f5f5; }
-    .muted { opacity: .7; }
-    .error { color: #b00020; }
-    .ok { color: #0a0; }
-    code { background: #0001; padding: 0 4px; border-radius: 4px; }
+    th, td { border: 1px solid #333; padding: 8px 10px; text-align: left; }
+    th { background: #222; }
+    .muted { opacity: .75; }
+    .error { color: #ff6b6b; }
+    .ok { color: #27d17f; }
+    code { background: #0008; padding: 0 4px; border-radius: 4px; }
     a.btn { display: inline-block; padding: 6px 10px; border-radius: 6px; background: #0b6; color: #fff; text-decoration: none; }
-    .pill { font-size: 12px; padding: 2px 6px; border-radius: 999px; background: #0002; }
-    .bingo { display: flex; gap: 16px; align-items: stretch; flex-wrap: nowrap; }
+    .pill { font-size: 12px; padding: 2px 6px; border-radius: 999px; background: #ffffff1a; }
+    .bingo { display: flex; gap: 16px; align-items: stretch; flex-wrap: wrap; }
     .bingo-sidebar { flex: 0 0 280px; max-width: 100%; }
     .bingo-players { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; max-height: 280px; overflow: auto; padding-right: 4px; }
-    .bingo-players .btn { background: #f7f7f7; color: #000; border: 1px solid #ccc; border-radius: 8px; padding: 8px 10px; cursor: pointer; box-shadow: 0 1px 2px #0001; }
-    .bingo-players .btn:hover { background: #eee; }
+    .bingo-players .btn { background: #222; color: #eee; border: 1px solid #444; border-radius: 10px; padding: 10px 12px; cursor: pointer; box-shadow: 0 1px 2px #0006; }
+    .bingo-players .btn:hover { background: #2a2a2a; }
     .bingo-players .btn.sel { background: #0b6; color: #fff; border-color: #0b6; }
-    .bingo-grid { display: grid; grid-template-columns: repeat(3, minmax(64px, 1fr)); gap: 6px; }
-    .bingo-cell { border: 1px solid #ccc; border-radius: 8px; padding: 10px; text-align: center; min-width: 64px; min-height: 64px; display: flex; align-items: center; justify-content: center; flex-direction: column; }
-    .bingo-cell .bingo-lab { font-size: 12px; opacity: .9; margin-bottom: 6px; }
-    .bingo-cell.checked { background: #0b62; border-color: #0b6; }
+    .bingo-grid { display: grid; grid-template-columns: repeat(3, minmax(64px, 1fr)); gap: 8px; }
+    .bingo-cell { border: 1px solid #333; border-radius: 10px; padding: 12px; text-align: center; min-width: 64px; min-height: 64px; display: flex; align-items: center; justify-content: center; flex-direction: column; background:#1b1b1b; }
+    .bingo-cell .bingo-lab { font-size: 12px; opacity: .9; margin-bottom: 6px; color:#ddd; line-height: 1.15; word-break: break-word; }
+    .bingo-cell.checked { background: rgba(0,187,102,0.15); border-color: #0b6; }
     .bingo-cell.win { box-shadow: inset 0 0 0 2px #0b6; }
+    @media (max-width: 700px){
+      .bingo { flex-direction: column; }
+      .bingo-sidebar { order: 2; }
+    }
   </style>
   <script>
     // Manager id is injected by the backend by replacing __MANAGER_ID__ placeholder
@@ -263,12 +267,12 @@
       el.innerHTML = `
         ${meta ? renderBingoMeta(meta, players) : ''}
         <div class="bingo">
-          <div class="bingo-sidebar">
-            <div id="bingoPlayers" class="bingo-players"></div>
-          </div>
           <div style="flex:1; min-width:240px;">
             <div id="bingoGrid" class="bingo-grid"></div>
             <div id="bingoLines" class="muted" style="margin-top:6px"></div>
+          </div>
+          <div class="bingo-sidebar">
+            <div id="bingoPlayers" class="bingo-players"></div>
           </div>
         </div>
       `;
@@ -300,14 +304,13 @@
         }
       }
       function renderGrid() {
-        const labels = ['1','2','3','4','5','6','7','8','9'];
         const cells = selected.cells;
         const lines = [ [0,1,2], [3,4,5], [6,7,8], [0,3,6], [1,4,7], [2,5,8], [0,4,8], [2,4,6] ];
         const completeIdx = lines.map((idx, i) => idx.every(j => cells[j]) ? i : -1).filter(i => i >= 0);
         gridEl.innerHTML = labels.map((lab, i) => {
           const checked = cells[i];
           const inWin = completeIdx.some(ci => lines[ci].includes(i));
-          return `<div class="bingo-cell${checked?' checked':''}${inWin?' win':''}"><div class="bingo-lab">${lab}</div>${checked? '✓' : ''}</div>`;
+          return `<div class="bingo-cell${checked?' checked':''}${inWin?' win':''}"><div class="bingo-lab">${escapeHtml(String(lab))}</div>${checked? '✓' : ''}</div>`;
         }).join('');
         const lineNames = ['Row 1','Row 2','Row 3','Col 1','Col 2','Col 3','Diag ↘','Diag ↙'];
         linesEl.textContent = completeIdx.length ? `Completed: ${completeIdx.map(i=>lineNames[i]).join(', ')}` : 'No complete lines yet.';
