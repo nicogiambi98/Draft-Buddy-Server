@@ -314,32 +314,29 @@
       const linesEl = document.getElementById('bingoLines');
       // Load labels from DB if present; prefer DB only (no remote JSON fallback)
       let labels = ['1','2','3','4','5','6','7','8','9'];
-      let hasDbLabels = false;
       try {
-        const lr = db.exec("SELECT id, title, name, label, text, description FROM bingo_achievements ORDER BY id ASC");
+        const lr = db.exec("SELECT id, COALESCE(NULLIF(TRIM(title),''), NULLIF(TRIM(name),''), NULLIF(TRIM(label),''), NULLIF(TRIM(text),''), NULLIF(TRIM(description),'')) AS lab FROM bingo_achievements ORDER BY id ASC");
         if (lr.length && lr[0].values.length) {
           const tmp = new Array(9);
-          const cols = lr[0].columns;
-          const titleIdx = cols.indexOf('title');
-          const nameIdx = cols.indexOf('name');
-          const labelIdx = cols.indexOf('label');
-          const textIdx = cols.indexOf('text');
-          const descIdx = cols.indexOf('description');
+          let fallbackIdx = 0;
           for (const row of lr[0].values) {
             const rawId = Number(row[0]);
+            const lab = row[1];
+            if (lab == null || String(lab).trim().length === 0) continue;
             let slot = Number.isFinite(rawId) ? rawId : NaN;
             if (!Number.isNaN(slot)) {
               // Normalize 1..9 into 0..8
               if (slot >= 1 && slot <= 9) slot = slot - 1;
-              if (slot >= 0 && slot < 9) {
-                const lab = [titleIdx, nameIdx, labelIdx, textIdx, descIdx]
-                  .map(i => (i >= 0 ? row[i] : undefined))
-                  .find(v => v != null && String(v).trim().length > 0);
-                if (lab != null) tmp[slot] = String(lab);
-              }
+            }
+            if (Number.isNaN(slot) || slot < 0 || slot > 8) {
+              // If id is not a recognized index, place by order if space remains
+              while (fallbackIdx < 9 && tmp[fallbackIdx] != null) fallbackIdx++;
+              if (fallbackIdx < 9) tmp[fallbackIdx] = String(lab);
+            } else {
+              tmp[slot] = String(lab);
             }
           }
-          if (tmp.some(Boolean)) { hasDbLabels = true; labels = tmp.map((v,i)=> v ?? labels[i]); }
+          labels = tmp.map((v,i)=> v ?? labels[i]);
         }
       } catch(e) { /* ignore */ }
       let selected = players.length ? players[0] : null;
