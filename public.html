@@ -43,11 +43,8 @@
     async function load() {
       const statusEl = document.getElementById('status');
       const versionEl = document.getElementById('version');
-      const dlEl = document.getElementById('downloadLink');
       const tablesEl = document.getElementById('tables');
       const summaryEl = document.getElementById('summary');
-
-      dlEl.href = SNAPSHOT_URL;
 
       try {
         const v = await fetchText(VERSION_URL);
@@ -85,35 +82,11 @@
       const tableNames = res.length ? res[0].values.flat() : [];
       tablesEl.innerHTML = tableNames.map(n => `<span class="pill">${n}</span>`).join(' ');
 
-      // Try to infer some useful views if specific tables exist
-      // Best effort: standings from event_players/event_scores or similar
-      let html = '';
-      try {
-        // Heuristic queries guarded with try/catch to work across unknown schemas
-        // 1) If there's a table named standings (materialized), show it
-        if (tableNames.includes('standings')) {
-          html += renderQuery(db, 'Standings', 'SELECT * FROM standings');
-        } else if (tableNames.includes('event_players') && (tableNames.includes('events') || tableNames.includes('event'))) {
-          // Attempt a common schema pattern
-          const q = `
-            SELECT p.name AS player, COALESCE(p.points, 0) AS pts, COALESCE(p.wins, 0) AS wins, COALESCE(p.losses, 0) AS losses
-            FROM event_players p
-            ORDER BY pts DESC, wins DESC, player ASC
-          `;
-          html += renderQuery(db, 'Players', q);
-        }
-        // 2) Pairings/matches if matches table exists
-        if (tableNames.includes('matches')) {
-          html += renderQuery(db, 'Matches', 'SELECT * FROM matches ORDER BY round, table_no');
-        }
-      } catch (e) {
-        console.warn('Heuristic view failed', e);
-      }
-
-      if (!html) {
-        html = '<p class="muted">No known tables found. Use the Table Browser below.</p>';
-      }
-      summaryEl.innerHTML = html;
+      // Dashboard sections
+      try { renderActiveEventSection(db, tableNames); } catch (e) { console.warn(e); }
+      try { renderPairingsSection(db, tableNames); } catch (e) { console.warn(e); }
+      try { renderBingoSection(db, tableNames); } catch (e) { console.warn(e); }
+      try { renderLeagueSection(db, tableNames); } catch (e) { console.warn(e); }
 
       // Populate generic table browser
       const selector = document.getElementById('tableSelector');
@@ -150,9 +123,162 @@
 
     function escapeHtml(s) { return s.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;','\'':'&#39;'}[c])); }
 
+    function getSingle(db, sql) {
+      try {
+        const r = db.exec(sql);
+        if (r.length && r[0].values.length) {
+          const cols = r[0].columns;
+          const vals = r[0].values[0];
+          const obj = {};
+          cols.forEach((c, i) => obj[c] = vals[i]);
+          return obj;
+        }
+      } catch (e) { /* noop */ }
+      return null;
+    }
+
+    function renderActiveEventSection(db, tableNames) {
+      const el = document.getElementById('activeEvent');
+      if (!tableNames.includes('events')) {
+        el.innerHTML = '<p class="muted">No events table.</p>';
+        return;
+      }
+      // Prefer explicit active status, otherwise most recent with current_round>0, otherwise latest
+      let ev = getSingle(db, "SELECT id,name,type,rounds,current_round,status,round_start_ts FROM events WHERE status IN ('active','running') ORDER BY id DESC LIMIT 1");
+      if (!ev) ev = getSingle(db, "SELECT id,name,type,rounds,current_round,status,round_start_ts FROM events WHERE IFNULL(current_round,0)>0 ORDER BY id DESC LIMIT 1");
+      if (!ev) ev = getSingle(db, "SELECT id,name,type,rounds,current_round,status,round_start_ts FROM events ORDER BY id DESC LIMIT 1");
+      if (!ev) {
+        el.innerHTML = '<p class="muted">No events yet.</p>';
+        return;
+      }
+      const when = ev.round_start_ts ? new Date(parseInt(ev.round_start_ts,10)*1000).toLocaleString() : '—';
+      el.innerHTML = `
+        <div><b>${escapeHtml(ev.name || 'Event')}</b> <span class="pill">${escapeHtml(ev.type||'')}</span></div>
+        <div>Status: <b>${escapeHtml(ev.status||'unknown')}</b></div>
+        <div>Round: <b>${ev.current_round ?? 0}</b> / ${ev.rounds ?? '?'}</div>
+        <div>Round started: <span class="pill">${when}</span></div>
+      `;
+      // Cache active id for pairings
+      window.__ACTIVE_EVENT_ID__ = ev.id;
+      window.__ACTIVE_ROUND__ = ev.current_round ?? 0;
+    }
+
+    function renderPairingsSection(db, tableNames) {
+      const el = document.getElementById('pairings');
+      if (!tableNames.includes('matches')) {
+        el.innerHTML = '<p class="muted">No matches table.</p>';
+        return;
+      }
+      const evId = window.__ACTIVE_EVENT_ID__;
+      const rnd = window.__ACTIVE_ROUND__;
+      if (!evId || !rnd) {
+        el.innerHTML = '<p class="muted">No active round.</p>';
+        return;
+      }
+      const sql = `
+        SELECT m.round,
+               COALESCE(p1.nickname, p1.name, 'BYE') AS p1,
+               COALESCE(p2.nickname, p2.name, 'BYE') AS p2,
+               m.score_p1 AS s1,
+               m.score_p2 AS s2,
+               m.bye
+        FROM matches m
+        LEFT JOIN players p1 ON p1.id = m.player1
+        LEFT JOIN players p2 ON p2.id = m.player2
+        WHERE m.event_id = ${evId} AND m.round = ${rnd}
+        ORDER BY m.id
+      `;
+      const r = db.exec(sql);
+      if (!r.length || !r[0].values.length) {
+        el.innerHTML = '<p class="muted">No pairings for current round.</p>';
+        return;
+      }
+      const rows = r[0].values.map(v => [v[1], v[3] != null ? v[3] : '', '-', v[2], v[4] != null ? v[4] : '']);
+      const head = `<tr><th>Player 1</th><th>Score</th><th></th><th>Player 2</th><th>Score</th></tr>`;
+      const body = rows.map(row => `<tr>${row.map(x => `<td>${escapeHtml(String(x))}</td>`).join('')}</tr>`).join('');
+      el.innerHTML = `<table>${head}${body}</table>`;
+    }
+
+    function renderBingoSection(db, tableNames) {
+      const el = document.getElementById('bingo');
+      if (!(tableNames.includes('bingo_players') && tableNames.includes('bingo_meta'))) {
+        el.innerHTML = '<p class="muted">Bingo not configured.</p>';
+        return;
+      }
+      const meta = getSingle(db, 'SELECT row0,row1,row2,col0,col1,col2,diag0,diag1,full FROM bingo_meta WHERE id=1');
+      let metaBadges = '';
+      if (meta) {
+        const labels = [];
+        if (meta.row0) labels.push('Row 1');
+        if (meta.row1) labels.push('Row 2');
+        if (meta.row2) labels.push('Row 3');
+        if (meta.col0) labels.push('Col 1');
+        if (meta.col1) labels.push('Col 2');
+        if (meta.col2) labels.push('Col 3');
+        if (meta.diag0) labels.push('Diag ↘');
+        if (meta.diag1) labels.push('Diag ↙');
+        if (meta.full) labels.push('Full Bingo');
+        if (labels.length) metaBadges = labels.map(x=>`<span class="pill">${x}</span>`).join(' ');
+      }
+      const rs = db.exec(`
+        SELECT COALESCE(p.nickname,p.name,'Player') AS player,
+               (bp.c0+bp.c1+bp.c2+bp.c3+bp.c4+bp.c5+bp.c6+bp.c7+bp.c8) AS marks
+        FROM bingo_players bp
+        LEFT JOIN players p ON p.id = bp.player_id
+        ORDER BY marks DESC, player ASC
+      `);
+      if (!rs.length || !rs[0].values.length) {
+        el.innerHTML = '<p class="muted">No bingo progress yet.</p>';
+        return;
+      }
+      const head = `<tr><th>Player</th><th>Marks</th></tr>`;
+      const body = rs[0].values.map(v => `<tr><td>${escapeHtml(String(v[0]))}</td><td>${v[1]}</td></tr>`).join('');
+      el.innerHTML = `${metaBadges ? `<div style="margin-bottom:6px">${metaBadges}</div>`:''}<table>${head}${body}</table>`;
+    }
+
+    function renderLeagueSection(db, tableNames) {
+      const el = document.getElementById('league');
+      if (!tableNames.includes('leagues')) {
+        el.innerHTML = '<p class="muted">No leagues defined.</p>';
+        return;
+      }
+      const lg = getSingle(db, 'SELECT id,name,start_ts,end_ts FROM leagues ORDER BY IFNULL(end_ts, 32503680000) DESC, start_ts DESC LIMIT 1');
+      if (!lg) { el.innerHTML = '<p class="muted">No leagues found.</p>'; return; }
+      // Aggregate wins across all matches since league start (events proxy via created_at)
+      // Fallback: if events table exists, restrict to events created after league start
+      let where = '';
+      if (tableNames.includes('events')) {
+        where = ` AND m.event_id IN (SELECT id FROM events WHERE IFNULL(strftime('%s', created_at), 0) >= ${lg.start_ts || 0} ${lg.end_ts ? `AND IFNULL(strftime('%s', created_at),0) <= ${lg.end_ts}`:''})`;
+      }
+      const sql = `
+        WITH wins AS (
+          SELECT player1 AS pid, SUM(CASE WHEN IFNULL(score_p1,0) > IFNULL(score_p2,0) THEN 1 ELSE 0 END) AS w,
+                 SUM(CASE WHEN IFNULL(score_p1,0) < IFNULL(score_p2,0) THEN 1 ELSE 0 END) AS l
+          FROM matches m WHERE IFNULL(bye,0)=0 ${where}
+          UNION ALL
+          SELECT player2 AS pid, SUM(CASE WHEN IFNULL(score_p2,0) > IFNULL(score_p1,0) THEN 1 ELSE 0 END) AS w,
+                 SUM(CASE WHEN IFNULL(score_p2,0) < IFNULL(score_p1,0) THEN 1 ELSE 0 END) AS l
+          FROM matches m WHERE IFNULL(bye,0)=0 ${where}
+        )
+        SELECT COALESCE(p.nickname,p.name,'Player') AS player, SUM(w) AS wins, SUM(l) AS losses
+        FROM wins
+        LEFT JOIN players p ON p.id = pid
+        GROUP BY pid
+        HAVING (wins + losses) > 0
+        ORDER BY wins DESC, losses ASC, player ASC
+        LIMIT 50
+      `;
+      const r = db.exec(sql);
+      const title = `${escapeHtml(lg.name || 'League')} ${lg.start_ts ? '('+new Date(lg.start_ts*1000).toLocaleDateString()+ (lg.end_ts? ' – '+new Date(lg.end_ts*1000).toLocaleDateString():'') +')' : ''}`;
+      if (!r.length || !r[0].values.length) { el.innerHTML = `<div class="muted">No match data for ${title}.</div>`; return; }
+      const head = `<tr><th>Player</th><th>Wins</th><th>Losses</th></tr>`;
+      const body = r[0].values.map(v => `<tr><td>${escapeHtml(String(v[0]))}</td><td>${v[1]}</td><td>${v[2]}</td></tr>`).join('');
+      el.innerHTML = `<div style="margin-bottom:6px"><b>${title}</b></div><table>${head}${body}</table>`;
+    }
+
     window.addEventListener('DOMContentLoaded', load);
   </script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.8.0/sql-wasm.js" integrity="sha512-zqk9fZ8cWzqOAntXQf8Cm8S3C6uPbxP1h8z6oG3VtRvL1tq2Qd9BTw4q6uOqjN4pHq2E5Gkq3xYfQn0bYV3Z9w==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.8.0/sql-wasm.js" referrerpolicy="no-referrer"></script>
 </head>
 <body>
   <header>
@@ -163,9 +289,6 @@
       <div class="card">
         <b>Snapshot version:</b> <span id="version" class="pill">checking…</span>
       </div>
-      <div class="card">
-        <a id="downloadLink" class="btn" href="#" download>Download snapshot.sqlite</a>
-      </div>
     </div>
 
     <div class="card">
@@ -174,6 +297,26 @@
     </div>
 
     <div id="summary"></div>
+
+    <div class="card" id="activeEventCard">
+      <h3>Active Event</h3>
+      <div id="activeEvent"></div>
+    </div>
+
+    <div class="card" id="pairingsCard">
+      <h3>Current Round Pairings</h3>
+      <div id="pairings"></div>
+    </div>
+
+    <div class="card" id="bingoCard">
+      <h3>Bingo Progress</h3>
+      <div id="bingo"></div>
+    </div>
+
+    <div class="card" id="leagueCard">
+      <h3>League Standings</h3>
+      <div id="league"></div>
+    </div>
 
     <div class="card">
       <h3>Table Browser</h3>
