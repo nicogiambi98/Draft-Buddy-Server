@@ -411,38 +411,120 @@
         el.innerHTML = '<p class="muted">No leagues defined.</p>';
         return;
       }
-      const lg = getSingle(db, 'SELECT id,name,start_ts,end_ts FROM leagues ORDER BY IFNULL(end_ts, 32503680000) DESC, start_ts DESC LIMIT 1');
+      // Choose active league if available, else most recent by id
+      let lg = null;
+      try {
+        lg = getSingle(db, "SELECT id,name,start_ts,end_ts FROM leagues WHERE end_ts IS NULL ORDER BY id DESC LIMIT 1")
+            || getSingle(db, "SELECT id,name,start_ts,end_ts FROM leagues ORDER BY id DESC LIMIT 1");
+      } catch (_) {}
       if (!lg) { el.innerHTML = '<p class="muted">No leagues found.</p>'; return; }
-      // Aggregate wins across all matches since league start (events proxy via created_at)
-      // Fallback: if events table exists, restrict to events created after league start
-      let where = '';
-      if (tableNames.includes('events')) {
-        where = ` AND m.event_id IN (SELECT id FROM events WHERE IFNULL(strftime('%s', created_at), 0) >= ${lg.start_ts || 0} ${lg.end_ts ? `AND IFNULL(strftime('%s', created_at),0) <= ${lg.end_ts}`:''})`;
+
+      // Mirror app logic (LeagueScreen._compute_league_rows)
+      // 1) Select closed events whose round_start_ts falls within league window
+      if (!tableNames.includes('events')) { el.innerHTML = '<p class="muted">No events data for league.</p>'; return; }
+      const safe_start = (lg.start_ts != null ? parseInt(lg.start_ts, 10) : Math.floor(Date.now()/1000));
+      const params = [safe_start];
+      let where = "status='closed' AND round_start_ts IS NOT NULL AND round_start_ts >= ?";
+      if (lg.end_ts != null) { where += " AND round_start_ts <= ?"; params.push(parseInt(lg.end_ts,10)); }
+      let evRows = [];
+      try {
+        const q = `SELECT id FROM events WHERE ${where}`;
+        const stmt = db.prepare(q);
+        stmt.bind(params);
+        while (stmt.step()) { const row = stmt.getAsObject(); evRows.push(row); }
+        stmt.free();
+      } catch (e) {
+        // Fallback: simple exec without bind (interpolate numbers)
+        const q = `SELECT id FROM events WHERE status='closed' AND round_start_ts IS NOT NULL AND round_start_ts >= ${safe_start}` +
+                  (lg.end_ts != null ? ` AND round_start_ts <= ${parseInt(lg.end_ts,10)}` : '');
+        const r = db.exec(q);
+        if (r.length && r[0].values.length) {
+          evRows = r[0].values.map(v => ({ id: v[0] }));
+        }
       }
-      const sql = `
-        WITH wins AS (
-          SELECT player1 AS pid, SUM(CASE WHEN IFNULL(score_p1,0) > IFNULL(score_p2,0) THEN 1 ELSE 0 END) AS w,
-                 SUM(CASE WHEN IFNULL(score_p1,0) < IFNULL(score_p2,0) THEN 1 ELSE 0 END) AS l
-          FROM matches m WHERE IFNULL(bye,0)=0 ${where}
-          UNION ALL
-          SELECT player2 AS pid, SUM(CASE WHEN IFNULL(score_p2,0) > IFNULL(score_p1,0) THEN 1 ELSE 0 END) AS w,
-                 SUM(CASE WHEN IFNULL(score_p2,0) < IFNULL(score_p1,0) THEN 1 ELSE 0 END) AS l
-          FROM matches m WHERE IFNULL(bye,0)=0 ${where}
-        )
-        SELECT COALESCE(p.nickname,p.name,'Player') AS player, SUM(w) AS wins, SUM(l) AS losses
-        FROM wins
-        INNER JOIN players p ON p.id = pid
-        GROUP BY pid
-        HAVING (wins + losses) > 0
-        ORDER BY wins DESC, losses ASC, player ASC
-        LIMIT 50
-      `;
-      const r = db.exec(sql);
+      const eventIds = evRows.map(r => r.id).filter(x => x != null);
+      if (!eventIds.length) { el.innerHTML = '<p class="muted">No eligible events in this league.</p>'; return; }
+
+      // 2) Build ep_map and participants
+      const epMap = {}; // ev_id -> { ep_id: partKey }
+      const participants = new Set();
+      const qmarks = eventIds.map(()=>'?').join(',');
+      try {
+        const stmt = db.prepare(`SELECT id, event_id, player_id, guest_name FROM event_players WHERE event_id IN (${qmarks})`);
+        stmt.bind(eventIds);
+        while (stmt.step()) {
+          const row = stmt.getAsObject();
+          let key = null;
+          if (row.player_id != null) key = parseInt(row.player_id,10);
+          else if (row.guest_name) key = `g:${row.guest_name}`;
+          if (key == null) continue;
+          if (!epMap[row.event_id]) epMap[row.event_id] = {};
+          epMap[row.event_id][row.id] = key;
+          participants.add(key);
+        }
+        stmt.free();
+      } catch (e) {
+        // fallback path
+      }
+      if (participants.size === 0) { el.innerHTML = '<p class="muted">No participants for this league.</p>'; return; }
+
+      // 3) Resolve names
+      const stats = {};
+      participants.forEach(key => { stats[key] = { pid: key, name: '', matches: 0, wins: 0, losses: 0, draws: 0 }; });
+      const regIds = Array.from(participants).filter(k => typeof k === 'number' && Number.isFinite(k));
+      if (regIds.length) {
+        const r = db.exec(`SELECT id, COALESCE(nickname, name) AS nm FROM players WHERE id IN (${regIds.join(',')})`);
+        if (r.length && r[0].values.length) {
+          r[0].values.forEach(v => { const pid = v[0]; const nm = v[1]; if (stats[pid]) stats[pid].name = nm; });
+        }
+      }
+      Array.from(participants).forEach(key => { if (typeof key === 'string' && key.startsWith('g:')) stats[key].name = key.slice(2) || 'Guest'; });
+
+      // 4) Walk matches and accumulate
+      for (const evId of eventIds) {
+        const r = db.exec(`SELECT player1, player2, score_p1, score_p2, bye FROM matches WHERE event_id = ${evId}`);
+        if (!(r.length && r[0].values.length)) continue;
+        for (const m of r[0].values) {
+          const p1 = m[0], p2 = m[1];
+          const s1 = Number(m[2] ?? 0), s2 = Number(m[3] ?? 0);
+          const bye = Number(m[4] ?? 0);
+          if (bye === 1) {
+            const pid1 = epMap[evId] && epMap[evId][p1];
+            if (pid1 != null && stats[pid1]) { stats[pid1].wins += 1; stats[pid1].matches += 1; }
+            continue;
+          }
+          const pid1 = epMap[evId] && epMap[evId][p1];
+          const pid2 = epMap[evId] && epMap[evId][p2];
+          if (pid1 == null || pid2 == null) continue;
+          stats[pid1].matches += 1; stats[pid2].matches += 1;
+          if (s1 > s2) { stats[pid1].wins += 1; stats[pid2].losses += 1; }
+          else if (s2 > s1) { stats[pid2].wins += 1; stats[pid1].losses += 1; }
+          else { stats[pid1].draws += 1; stats[pid2].draws += 1; }
+        }
+      }
+
+      // 5) Compute winrate and league score (same as app)
+      const k = 0.3;
+      const rows = Object.values(stats).map(st => {
+        const mp = st.matches;
+        const wr = mp > 0 ? ((st.wins + 0.5 * st.draws) / mp) : 0.0;
+        const score = 100.0 * wr * (1.0 - Math.E ** (-k * mp));
+        return { ...st, winrate: wr, score };
+      });
+      rows.sort((a,b) => (b.score - a.score) || (b.winrate - a.winrate) || ((a.name||'').localeCompare(b.name||'')) );
+
+      // 6) Render like the app: #, Name, MP, W-L-D, Winrate %, League Score
       const title = `${escapeHtml(lg.name || 'League')} ${lg.start_ts ? '('+new Date(lg.start_ts*1000).toLocaleDateString()+ (lg.end_ts? ' – '+new Date(lg.end_ts*1000).toLocaleDateString():'') +')' : ''}`;
-      if (!r.length || !r[0].values.length) { el.innerHTML = `<div class="muted">No match data for ${title}.</div>`; return; }
-      const head = `<tr><th>Player</th><th>Wins</th><th>Losses</th></tr>`;
-      const body = r[0].values.map(v => `<tr><td>${escapeHtml(String(v[0]))}</td><td>${v[1]}</td><td>${v[2]}</td></tr>`).join('');
-      el.innerHTML = `<div style="margin-bottom:6px"><b>${title}</b></div><table>${head}${body}</table>`;
+      if (!rows.length) { el.innerHTML = `<div class="muted">No match data for ${title}.</div>`; return; }
+      const head = `<tr><th>#</th><th>Name</th><th>MP</th><th>W-L-D</th><th>Winrate %</th><th>League Score</th></tr>`;
+      const body = rows.map((st, idx) => {
+        const wld = `${st.wins}-${st.losses}-${st.draws}`;
+        const wr = (st.winrate * 100).toFixed(2);
+        const ls = st.score.toFixed(2);
+        const cells = [idx+1, st.name || 'Player', st.matches, wld, wr, ls].map(x=>`<td>${escapeHtml(String(x))}</td>`).join('');
+        return `<tr>${cells}</tr>`;
+      }).join('');
+      el.innerHTML = `<div style="margin-bottom:6px"><b>${title}</b></div><div class="table-wrap"><table>${head}${body}</table></div>`;
     }
 
     // Compute standings using app logic (pairing.compute_standings)
