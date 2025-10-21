@@ -79,6 +79,18 @@ for part in parts:
 if not USERS:
     logging.getLogger("draftbuddy").warning("No users configured. Add entries to server/users.txt (username:password@manager_id). Login will fail until configured.")
 
+# Load available domains (playgroups) from domains.txt; fallback to ['clandestini']
+DOMAINS_FILE = os.path.join(os.path.dirname(__file__), "domains.txt")
+DOMAINS = []
+if os.path.exists(DOMAINS_FILE):
+    try:
+        with open(DOMAINS_FILE, "r", encoding="utf-8") as f:
+            DOMAINS = [ln.strip() for ln in f.readlines() if ln.strip()]
+    except Exception as e:
+        logging.getLogger("draftbuddy").warning("Failed to read domains.txt: %s", e)
+if not DOMAINS:
+    DOMAINS = ["clandestini"]
+
 # Configure simple logging to stdout
 logging.basicConfig(level=logging.INFO, format='[%(asctime)s] %(levelname)s %(message)s')
 logger = logging.getLogger("draftbuddy")
@@ -187,9 +199,15 @@ class LoginBody(BaseModel):
     playgroup: Optional[str] | None = None
 
 
+@app.get("/domains")
+def get_domains():
+    """List available domains (playgroups) read from server/domains.txt."""
+    return {"domains": DOMAINS, "default": DOMAINS[0] if DOMAINS else None}
+
 @app.get("/health")
 def health(request: Request):
     base = str(request.base_url).rstrip("/")
+    example = DOMAINS[0] if DOMAINS else "clandestini"
     return {
         "status": "ok",
         "time": time.time(),
@@ -198,8 +216,9 @@ def health(request: Request):
             "login": f"{base}/auth/login",
             "upload": f"{base}/db/upload",
             "download": f"{base}/db/download",
-            "public_example_snapshot": f"{base}/public/default/snapshot.sqlite",
-            "public_example_view": f"{base}/public/default/view",
+            "domains": f"{base}/domains",
+            "public_example_snapshot": f"{base}/public/{example}/snapshot.sqlite",
+            "public_example_view": f"{base}/public/{example}/view",
         }
     }
 
@@ -346,14 +365,16 @@ def public_version(manager_id: str):
 @app.get("/")
 def root(request: Request):
     base = str(request.base_url).rstrip("/")
+    example = DOMAINS[0] if DOMAINS else "clandestini"
     return JSONResponse({
         "status": "ok",
         "health": f"{base}/health",
         "login": f"{base}/auth/login",
         "upload": f"{base}/db/upload",
         "download": f"{base}/db/download",
-        "public_example_snapshot": f"{base}/public/default/snapshot.sqlite",
-        "public_example_view": f"{base}/public/default/view",
+        "domains": f"{base}/domains",
+        "public_example_snapshot": f"{base}/public/{example}/snapshot.sqlite",
+        "public_example_view": f"{base}/public/{example}/view",
     })
 
 
