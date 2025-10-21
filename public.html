@@ -13,7 +13,9 @@
     .row { display: flex; gap: 12px; flex-wrap: wrap; }
     .row > * { flex: 1 1 320px; }
     table { border-collapse: collapse; width: 100%; }
-    th, td { border: 1px solid #333; padding: 8px 10px; text-align: left; }
+    .table-wrap { width: 100%; overflow-x: auto; }
+    .card table { font-size: 14px; }
+    th, td { border: 1px solid #333; padding: 8px 10px; text-align: left; white-space: nowrap; vertical-align: middle; }
     th { background: #222; }
     .muted { opacity: .75; }
     .error { color: #ff6b6b; }
@@ -35,6 +37,8 @@
     @media (max-width: 700px){
       .bingo { flex-direction: column; }
       .bingo-sidebar { order: 2; }
+      .card table { font-size: 12px; }
+      th, td { padding: 6px 8px; }
     }
   </style>
   <script>
@@ -215,7 +219,7 @@
             .map(x => `<td>${escapeHtml(String(x))}</td>`).join('');
           return `<tr>${cells}</tr>`;
         }).join('');
-        el.innerHTML = `<div class="card"><h3>Final Standings</h3><table>${head}${body}</table></div>`;
+        el.innerHTML = `<div class="card"><h3>Final Standings</h3><div class="table-wrap"><table>${head}${body}</table></div></div>`;
         return;
       }
       // Otherwise, show current round pairings
@@ -265,7 +269,7 @@
       });
       const head = `<tr><th>Player 1</th><th>Score</th><th></th><th>Player 2</th><th>Score</th></tr>`;
       const body = rows.map(row => `<tr>${row.map(x => `<td>${escapeHtml(String(x))}</td>`).join('')}</tr>`).join('');
-      el.innerHTML = `<table>${head}${body}</table>`;
+      el.innerHTML = `<div class="table-wrap"><table>${head}${body}</table></div>`;
     }
 
     function renderBingoSection(db, tableNames) {
