@@ -422,13 +422,10 @@
           const checked = cells[i];
           const inWin = completeIdx.some(ci => lines[ci].includes(i));
           const safeLab = escapeHtml(String(lab));
-          return `<div class=\"bingo-cell${checked?' checked':''}${inWin?' win':''}\" data-idx=\"${i}\"><div class=\"bingo-lab\">${safeLab}</div><a href=\"#\" class=\"btn\" style=\"margin-top:6px;padding:4px 8px;font-size:12px;\" data-idx=\"${i}\">Info</a></div>`;
+          return `<div class=\"bingo-cell${checked?' checked':''}${inWin?' win':''}\" data-idx=\"${i}\"><div class=\"bingo-lab\">${safeLab}</div></div>`;
         }).join('');
-        for (const a of gridEl.querySelectorAll('a.btn')) {
-          a.addEventListener('click', (e)=>{ e.preventDefault(); const i = parseInt(a.getAttribute('data-idx'),10); openAchModal(i); });
-        }
         for (const cell of gridEl.querySelectorAll('.bingo-cell')) {
-          cell.addEventListener('click', (e)=>{ if (e.target && e.target.closest('a')) return; const i = parseInt(cell.getAttribute('data-idx'),10); openAchModal(i); });
+          cell.addEventListener('click', (e)=>{ const i = parseInt(cell.getAttribute('data-idx'),10); openAchModal(i); });
         }
         const lineNames = ['Row 1','Row 2','Row 3','Col 1','Col 2','Col 3','Diag ↘','Diag ↙'];
         linesEl.textContent = completeIdx.length ? `Completed: ${completeIdx.map(i=>lineNames[i]).join(', ')}` : 'No complete lines yet.';
@@ -697,7 +694,7 @@ window.addEventListener('DOMContentLoaded', load);
     </div>
 
     <div class="card" id="bingoCard">
-      <h3>Bingo Progress</h3>
+      <h3>Bingo Progress <small class="muted">(click an achievement for info)</small></h3>
       <div id="bingo"></div>
     </div>
 
